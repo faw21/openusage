@@ -137,15 +137,6 @@
     }
   }
 
-  function loadAppAuths(ctx) {
-    var auths = []
-    for (var i = 0; i < APP_AUTH_SOURCES.length; i++) {
-      var auth = readAppAuth(ctx, APP_AUTH_SOURCES[i])
-      if (auth) auths.push(auth)
-    }
-    return auths
-  }
-
   function readAppAuth(ctx, variant) {
     try {
       var rows = ctx.host.sqlite.query(
@@ -309,10 +300,11 @@
 
     // Walk every app install (stable, then "- Next") and try each token the cloud
     // hasn't already rejected, so a stale token in one install doesn't mask a
-    // valid one in another.
-    var appAuths = loadAppAuths(ctx)
-    for (var i = 0; i < appAuths.length; i++) {
-      var appAuth = appAuths[i]
+    // valid one in another. Read each state DB only when we reach it, so a working
+    // earlier source short-circuits before we touch a later install's DB.
+    for (var i = 0; i < APP_AUTH_SOURCES.length; i++) {
+      var appAuth = readAppAuth(ctx, APP_AUTH_SOURCES[i])
+      if (!appAuth) continue
       if (alreadyAttempted(attempts, appAuth)) continue
       sawApiKey = true
       attempts.push(authFingerprint(appAuth))
