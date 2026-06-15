@@ -13,7 +13,7 @@ Pin from any row's right-click menu, or from the pin that appears when hovering 
 
 ## Styles
 
-Settings → Menu Bar → Style:
+Settings → Appearance → Menu Style:
 
 - **Text** — provider icon plus values; two pinned metrics from the same provider stack as a labeled pair.
 - **Bars** — compact vertical bars, one per pinned metric that has a limit (metrics without limits only appear in Text style).

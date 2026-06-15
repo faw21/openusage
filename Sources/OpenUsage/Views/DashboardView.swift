@@ -25,9 +25,6 @@ struct DashboardView: View {
     @State private var reorderLift: ReorderLift?
     /// Reset to the top whenever the popover closes, so it never reopens mid-scroll.
     @State private var dashboardScrollPosition = ScrollPosition(edge: .top)
-    /// Drives the footer's "Next update in Nm" so it reflects the chosen cadence and updates live
-    /// when the General settings picker changes it. Same key/default as the periodic refresh loop.
-    @AppStorage(RefreshSetting.key) private var refreshMinutes = RefreshSetting.defaultMinutes
     /// Row rhythm and the Customize height seed track the global density setting live.
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
 
@@ -329,12 +326,12 @@ struct DashboardView: View {
     }
 
     /// "Updating…" during an in-flight refresh, otherwise a live countdown to the next scheduled pass
-    /// (last completed pass + the chosen interval). Falls back to a full interval before the first pass.
+    /// (last completed pass + the refresh interval). Falls back to a full interval before the first pass.
     private func updateStatusText(now: Date) -> String {
         if isUpdating {
             return "Updating…"
         }
-        let interval = TimeInterval(refreshMinutes * 60)
+        let interval = RefreshSetting.interval
         let base = dataStore.lastRefreshAt ?? now
         let remaining = max(0, base.addingTimeInterval(interval).timeIntervalSince(now))
         let totalSeconds = Int(remaining.rounded(.up))

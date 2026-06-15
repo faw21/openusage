@@ -55,7 +55,7 @@ final class AppContainer {
 
     deinit { refreshTask.cancel() }
 
-    /// Drives live updates: refresh on launch, then again every chosen interval. Each pass honors the
+    /// Drives live updates: refresh on launch, then again every refresh interval. Each pass honors the
     /// cache, so it only hits the network once a snapshot has actually expired. `@Observable` propagates
     /// the resulting snapshot changes to the menu-bar label and any open widgets, so the UI refreshes on
     /// its own instead of only when the popover opens.
@@ -68,10 +68,11 @@ final class AppContainer {
         }
     }
 
-    /// Sleep for the user's chosen refresh interval, but wake early on any `UserDefaults` change so a new
-    /// "Refresh every" choice takes effect on the next pass instead of after the old, longer interval.
+    /// Sleep for the refresh interval, but wake early on any `UserDefaults` change so a settings change
+    /// (e.g. enabling a provider) is reflected on the next pass instead of waiting out the full interval.
+    /// Each pass still honors the cache, so an early wake only hits the network once a snapshot expired.
     private static func waitForNextRefresh() async {
-        let interval = RefreshSetting.interval()
+        let interval = RefreshSetting.interval
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 try? await Task.sleep(for: .seconds(interval))

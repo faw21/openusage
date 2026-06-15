@@ -2,10 +2,9 @@
 
 ## When data updates
 
-- All enabled providers refresh together: at launch, then on the interval you pick in Settings (5–30 minutes). Providers fetch in parallel — one slow provider doesn't delay the others.
+- All enabled providers refresh together: at launch, then every 5 minutes (a fixed cadence — there's no setting for it). Providers fetch in parallel — one slow provider doesn't delay the others.
 - The popover footer shows `Next update in Nm`. **Clicking it (or ⌘R)** refreshes immediately, skipping the cache.
 - While a provider is fetching, a small spinner appears next to its name (and one shows in the footer beside the countdown), so you can tell a refresh is in flight rather than wondering if the numbers are stale.
-- Changing the interval in Settings takes effect right away.
 
 ## Caching
 

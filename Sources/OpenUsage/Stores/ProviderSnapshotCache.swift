@@ -7,10 +7,10 @@ struct ProviderSnapshotCache {
 
     private let userDefaults: UserDefaults
     private let storageKey: String
-    /// TTL is dynamic so it can track the user's chosen refresh interval. A snapshot stays fresh for
-    /// exactly one interval, which (read from the same `UserDefaults`) is what lets cached data survive
-    /// a relaunch without an immediate refetch and expire precisely when the next refresh is due.
-    private let ttlProvider: () -> TimeInterval
+    /// A snapshot stays fresh for exactly one refresh interval, which is what lets cached data survive a
+    /// relaunch without an immediate refetch and expire precisely when the next refresh is due. Tests
+    /// inject a fixed TTL for a deterministic freshness window.
+    private let ttl: TimeInterval
     private let now: () -> Date
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -18,12 +18,12 @@ struct ProviderSnapshotCache {
     init(
         userDefaults: UserDefaults = .standard,
         storageKey: String = "openusage.providerSnapshots.v2",
-        ttlProvider: (() -> TimeInterval)? = nil,
+        ttl: TimeInterval = RefreshSetting.interval,
         now: @escaping () -> Date = Date.init
     ) {
         self.userDefaults = userDefaults
         self.storageKey = storageKey
-        self.ttlProvider = ttlProvider ?? { RefreshSetting.interval(from: userDefaults) }
+        self.ttl = ttl
         self.now = now
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -31,21 +31,6 @@ struct ProviderSnapshotCache {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
-    }
-
-    /// Fixed-TTL convenience used by tests that want a deterministic freshness window.
-    init(
-        userDefaults: UserDefaults = .standard,
-        storageKey: String = "openusage.providerSnapshots.v2",
-        ttl: TimeInterval,
-        now: @escaping () -> Date = Date.init
-    ) {
-        self.init(
-            userDefaults: userDefaults,
-            storageKey: storageKey,
-            ttlProvider: { ttl },
-            now: now
-        )
     }
 
     /// Every stored snapshot for the given providers, including expired ones. Display uses this
@@ -72,7 +57,7 @@ struct ProviderSnapshotCache {
     }
 
     private func isValid(_ snapshot: ProviderSnapshot) -> Bool {
-        now().timeIntervalSince(snapshot.refreshedAt) < ttlProvider()
+        now().timeIntervalSince(snapshot.refreshedAt) < ttl
     }
 
     private func loadPayload() -> Payload {

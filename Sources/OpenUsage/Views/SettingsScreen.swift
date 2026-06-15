@@ -25,7 +25,6 @@ struct SettingsScreen: View {
     /// friendly line under the row.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
-    @AppStorage(RefreshSetting.key) private var refreshMinutes = RefreshSetting.defaultMinutes
     @AppStorage(AppearanceSetting.key) private var appearance = AppearanceSetting.system
     @AppStorage(TimeFormatSetting.key) private var timeFormat = TimeFormatSetting.auto
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
@@ -94,6 +93,9 @@ struct SettingsScreen: View {
                 }
             }
             section("Appearance") {
+                row("Menu Style") {
+                    picker($layout.menuBarStyle, options: MenuBarStyle.allCases, label: \.label)
+                }
                 row("Theme") {
                     picker($appearance, options: AppearanceSetting.allCases, label: \.label)
                         // NSApp-level so the popover panel restyles too (it ignores preferredColorScheme).
@@ -114,14 +116,6 @@ struct SettingsScreen: View {
                 }
                 row("Reset Times") {
                     picker($store.resetDisplayMode, options: ResetDisplayMode.allCases, label: \.label)
-                }
-            }
-            section("Menu Bar") {
-                row("Style") {
-                    picker($layout.menuBarStyle, options: MenuBarStyle.allCases, label: \.label)
-                }
-                row("Refresh Every") {
-                    picker($refreshMinutes, options: RefreshSetting.allowedMinutes, label: { "\($0) minutes" })
                 }
             }
             section("Providers") {
