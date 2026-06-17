@@ -1,26 +1,22 @@
+import AppKit
 import SwiftUI
 
-/// Footer Customize + Settings round glass buttons. Each toggles its in-popover screen: the active
-/// screen's button becomes a prominent checkmark "Done", clicking it returns to the dashboard, and
-/// clicking the other button switches screens directly.
+/// Footer "More" menu + Settings round glass buttons. The Settings button is unchanged: it toggles
+/// the in-popover Settings screen and its active state becomes a prominent checkmark "Done". The
+/// leading control is the same round glass button that pops a "More" pull-down (Customize Metrics /
+/// About / Quit); while the Customize screen is open it morphs into the prominent "Done" button that
+/// returns to the dashboard, so Customize keeps a visible exit (Esc also backs out).
 struct HeaderView: View {
     @Environment(LayoutStore.self) private var layout
+    /// Anchors the "More" pull-down under its button. `@State` keeps one stable instance.
+    @State private var moreMenuAnchor = PopUpMenuAnchor()
 
     var body: some View {
         // Group the adjacent glass buttons so the system samples them coherently (glass cannot sample
         // other glass). The gap stays wider than the container's merge distance, so they read as two
         // distinct circles rather than blending into one pill.
         HStack(spacing: 12) {
-            roundButton(
-                layout.screen == .customize ? "Done" : "Customize",
-                systemImage: layout.screen == .customize ? "checkmark" : "slider.horizontal.3",
-                // Prominent (accent-filled) glass marks the active screen; plain glass otherwise.
-                prominent: layout.screen == .customize
-            ) {
-                toggle(.customize)
-            }
-            // Plain Return (not .defaultAction, which would restyle the glass button as default).
-            .keyboardShortcut(.return, modifiers: [])
+            leadingControl
 
             roundButton(
                 layout.screen == .settings ? "Done" : "Settings",
@@ -33,6 +29,45 @@ struct HeaderView: View {
             .keyboardShortcut(",", modifiers: .command)
         }
         .glassButtonGroup(spacing: 4)
+    }
+
+    /// While the Customize screen is open the slot is the prominent "Done" button — clicking it (or ⏎)
+    /// returns to the dashboard, matching how the old Customize button behaved. Otherwise it's the
+    /// "More" button: the same round glass control, opening a pull-down whose "Customize Metrics" item
+    /// is the way into Customize.
+    @ViewBuilder
+    private var leadingControl: some View {
+        if layout.screen == .customize {
+            roundButton("Done", systemImage: "checkmark", prominent: true) {
+                toggle(.customize)
+            }
+            // Plain Return (not .defaultAction, which would restyle the glass button as default).
+            .keyboardShortcut(.return, modifiers: [])
+        } else {
+            roundButton("More", systemImage: "ellipsis", prominent: false) {
+                presentMoreMenu()
+            }
+            // The anchor view fills the button's frame so the menu drops from directly under it.
+            .background(PopUpMenuAnchorView(anchor: moreMenuAnchor))
+        }
+    }
+
+    /// Builds and pops the "More" pull-down as a native `NSMenu`, so the trigger stays the exact glass
+    /// `roundButton` (a SwiftUI `Menu` styled as a button does not match it). Quit carries the standard
+    /// ⌘Q equivalent.
+    private func presentMoreMenu() {
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(title: "Customize Metrics", systemSymbol: "slider.horizontal.3") {
+            toggle(.customize)
+        })
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "About OpenUsage", systemSymbol: "info.circle") {
+            AboutPanel.present()
+        })
+        menu.addItem(ClosureMenuItem(title: "Quit OpenUsage", systemSymbol: "power", keyEquivalent: "q") {
+            NSApplication.shared.terminate(nil)
+        })
+        moreMenuAnchor.present(menu)
     }
 
     private func toggle(_ screen: PopoverScreen) {
