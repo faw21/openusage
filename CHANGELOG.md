@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.0-beta.8
+
+### New Features
+- Split spend into cost/tokens, carry raw metric values (#641, #647) by @robinebers
+
 ## v0.7.0-beta.7
 
 ### New Features
