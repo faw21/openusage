@@ -288,6 +288,15 @@ struct WidgetData: Hashable {
         return selected.map { MetricFormatter.string(for: $0, style: .full) }.joined(separator: " · ")
     }
 
+    /// True for a zero-usage period — has data, but every selected value is zero (a row reading
+    /// "$0.00 · 0 tokens"). Distinct from "no data" and from small non-zero usage, so the row can show
+    /// a "no usage" note rather than a figures reveal.
+    var isZeroUsage: Bool {
+        guard hasData else { return false }
+        let selected = selectedValues
+        return !selected.isEmpty && selected.allSatisfy { $0.number == 0 }
+    }
+
     var resetLabel: String? {
         guard let resetsAt else { return nil }
         return Formatters.resetRelativeLabel(until: resetsAt)
