@@ -165,9 +165,12 @@ private struct TooltipBubble: View {
                 bubble
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { bubbleSize = $0 }
                     .offset(x: originX, y: originY)
-                    // Hidden until measured so the bubble never flashes at the origin before it's placed.
+                    // Invisible until measured, then it appears already in its final, in-bounds
+                    // position. Deliberately not animated: the offset depends on the measured size, so
+                    // animating its first change would slide the bubble in from an unplaced spot (it
+                    // would briefly sit out of bounds). A native-style pop avoids that.
                     .opacity(bubbleSize == .zero ? 0 : 1)
-                    .animation(.easeOut(duration: 0.1), value: bubbleSize == .zero)
+                    .transaction { $0.animation = nil }
             }
         }
     }
@@ -201,13 +204,13 @@ private struct TooltipBubble: View {
         return min(max(target.minX, Self.margin), maxX)
     }
 
-    /// Below the target by default; flips above when the bubble would overflow the bottom and there's
-    /// room up top, otherwise clamps below into bounds.
+    /// Above the target by default, so the cursor (resting on the target) doesn't overlay the bubble;
+    /// flips below when there's no room up top, otherwise clamps into bounds.
     private var originY: CGFloat {
-        let below = target.maxY + Self.gap
         let above = target.minY - Self.gap - bubbleSize.height
-        if below + bubbleSize.height <= bounds.height - Self.margin { return below }
+        let below = target.maxY + Self.gap
         if above >= Self.margin { return above }
-        return max(Self.margin, min(below, bounds.height - bubbleSize.height - Self.margin))
+        if below + bubbleSize.height <= bounds.height - Self.margin { return below }
+        return max(Self.margin, min(above, bounds.height - bubbleSize.height - Self.margin))
     }
 }
