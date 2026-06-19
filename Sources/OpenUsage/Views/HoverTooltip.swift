@@ -7,11 +7,13 @@ import SwiftUI
 ///
 /// It's drawn in its own borderless, non-activating, click-through `NSPanel` — not a SwiftUI overlay.
 /// A SwiftUI overlay lives inside the popover's window and is clipped to it (and to the dashboard's
-/// scroll view), so it can't float freely the way a tooltip must. The panel sits at `.popUpMenu` level
-/// (above the status-item popover), never becomes key and never activates the app (shown via
+/// scroll view), so it can't float freely the way a tooltip must. The panel sits at `.popUpMenu` — the
+/// same level as the status-item popover — so it shows over the popover by being ordered in front, not
+/// by a higher level. It never becomes key and never activates the app (shown via
 /// `orderFrontRegardless()`), which is the documented carve-out that keeps it from dismissing the
 /// transient popover; `ignoresMouseEvents` makes it click-through so it can't steal the hover that
-/// spawned it.
+/// spawned it. The popover closing doesn't move the cursor or tear down the (surviving) SwiftUI tree,
+/// so `HoverTooltips.dismissAll()` clears any live tooltip from the status-item controller's hide path.
 ///
 /// Usage: `.hoverTooltip(_:)` on any hover target. No root container is needed — the panel is a
 /// separate window owned by `TooltipPresenter`.
@@ -46,6 +48,9 @@ private struct HoverTooltipModifier: ViewModifier {
     /// Stable per-target identity, so the presenter can track which targets are currently hovered and
     /// drop this one on exit.
     @State private var id = UUID()
+    /// Whether the cursor is currently inside this target, so `onChange(of: resolved)` knows whether to
+    /// act when the text changes without a hover event firing.
+    @State private var isHovering = false
 
     /// `nil` (no tooltip) for a missing or blank string, collapsing the two "absent" cases.
     private var resolved: String? {
@@ -62,18 +67,40 @@ private struct HoverTooltipModifier: ViewModifier {
             // Continuous (not plain `onHover`) so the presenter always has the live hover state; it
             // reads the cursor itself at show time, so the reported location is unused here.
             .onContinuousHover { phase in
-                guard let resolved else { return }
                 switch phase {
                 case .active:
-                    TooltipPresenter.shared.enter(id: id, text: resolved, depth: depth,
-                                                  reduceTransparency: reduceTransparency)
+                    isHovering = true
+                    syncPresenter()
                 case .ended:
+                    // Always exit, regardless of `resolved`: if the text went nil/empty while hovered,
+                    // a guarded-out `.ended` would leave this target in the presenter and its tooltip
+                    // would linger.
+                    isHovering = false
                     TooltipPresenter.shared.exit(id: id)
                 }
             }
+            // Text can change while the cursor sits still (e.g. a meter tooltip refreshing to a no-tip
+            // state on its 30s tick), with no hover event to react to — reconcile so the bubble updates
+            // or clears.
+            .onChange(of: resolved) { syncPresenter() }
             // A row can be torn down (scroll, screen switch, popover close) without an `.ended`, so
             // clear our entry here too or the panel could linger.
-            .onDisappear { TooltipPresenter.shared.exit(id: id) }
+            .onDisappear {
+                isHovering = false
+                TooltipPresenter.shared.exit(id: id)
+            }
+    }
+
+    /// Reflect the current hover state into the presenter: show this target's text while hovered, drop
+    /// it when there's no text. A no-op when not hovered (so a text change off-hover does nothing).
+    private func syncPresenter() {
+        guard isHovering else { return }
+        if let resolved {
+            TooltipPresenter.shared.enter(id: id, text: resolved, depth: depth,
+                                          reduceTransparency: reduceTransparency)
+        } else {
+            TooltipPresenter.shared.exit(id: id)
+        }
     }
 }
 
@@ -92,8 +119,10 @@ private final class TooltipPresenter {
     /// Targets the cursor is currently inside. More than one only while a hover sits in both a child
     /// and its container; the deepest wins.
     private var active: [UUID: Target] = [:]
-    /// The target currently on screen, and the one a pending reveal is scheduled for.
+    /// The target currently on screen (and its text, to detect a live text change), and the one a
+    /// pending reveal is scheduled for.
     private var shownID: UUID?
+    private var shownText: String?
     private var pendingID: UUID?
     private var revealTask: Task<Void, Never>?
 
@@ -122,7 +151,7 @@ private final class TooltipPresenter {
         // host has an intrinsic size to report; the bubble is `.fixedSize()`, so that equals the size we
         // set and the host can't grow the panel out from under us.
         panel.isFloatingPanel = true
-        panel.level = .popUpMenu                          // above the status-item popover (.statusBar)
+        panel.level = .popUpMenu                          // same level as the status-item popover; wins by being ordered front
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.ignoresMouseEvents = true                   // click-through; never intercepts the hover
@@ -145,6 +174,15 @@ private final class TooltipPresenter {
         refresh()
     }
 
+    /// Clear everything. Called when the popover closes: its SwiftUI tree (and our hover state) survives
+    /// `orderOut`, so no `.ended`/`.onDisappear` fires for a target the cursor was resting on, and a
+    /// shown tooltip would otherwise orphan on screen with a pending reveal possibly firing afterward.
+    func dismissAll() {
+        active.removeAll()
+        cancelPending()
+        hide()
+    }
+
     /// Reconcile the panel with the deepest active target. Cheap and idempotent, so the per-pixel
     /// `onContinuousHover` calls mostly hit an early return.
     private func refresh() {
@@ -153,10 +191,17 @@ private final class TooltipPresenter {
             hide()
             return
         }
-        if shownID == top.key { return }            // already showing the right one — don't reposition
+        if shownID == top.key {                     // already the right target on screen
+            if shownText != top.value.text {        // its text changed live — re-present, don't reposition away
+                present(top.value)
+                shownText = top.value.text
+            }
+            return
+        }
         if shownID != nil {                         // a tooltip is up for another target — switch now
             present(top.value)
             shownID = top.key
+            shownText = top.value.text
             cancelPending()
             return
         }
@@ -171,6 +216,7 @@ private final class TooltipPresenter {
             guard !Task.isCancelled, let self else { return }
             self.present(target)
             self.shownID = id
+            self.shownText = target.text
             self.pendingID = nil
             self.revealTask = nil
         }
@@ -190,6 +236,7 @@ private final class TooltipPresenter {
     private func hide() {
         if shownID != nil { lastHideAt = clock.now }   // open the quick-mode window only after a real show
         shownID = nil
+        shownText = nil
         if panel.isVisible { panel.orderOut(nil) }
     }
 
@@ -210,7 +257,10 @@ private final class TooltipPresenter {
         var y = cursor.y + cursorGap
         let screen = NSScreen.screens.first { $0.frame.contains(cursor) } ?? NSScreen.main
         if let visible = screen?.visibleFrame {
-            x = min(max(x, visible.minX), visible.maxX - size.width)
+            // Clamp leading edge into the visible frame. The `min` keeps the trailing edge in, the outer
+            // `max` keeps the leading edge in even when the bubble is wider than the screen (it would
+            // otherwise land off the left edge — a reversed-bounds clamp).
+            x = max(visible.minX, min(x, visible.maxX - size.width))
             if y + size.height > visible.maxY {
                 y = cursor.y - cursorGap - size.height
             }
@@ -219,6 +269,13 @@ private final class TooltipPresenter {
         return NSPoint(x: x, y: y)
     }
 
+}
+
+/// Seam for non-SwiftUI code (the status-item controller) to clear any visible tooltip when the popover
+/// closes — `TooltipPresenter` is private.
+@MainActor
+enum HoverTooltips {
+    static func dismissAll() { TooltipPresenter.shared.dismissAll() }
 }
 
 /// Never becomes key or main, so showing it can't pull focus and dismiss the transient popover.
