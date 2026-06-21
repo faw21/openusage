@@ -48,7 +48,7 @@ struct WidgetGroupedListView: View {
             plan: dataStore.plan(for: group.provider.id),
             warning: dataStore.errorMessage(for: group.provider.id),
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
-            staleLabel: dataStore.stalenessLabel(for: group.provider.id)
+            staleness: dataStore.stalenessHint(for: group.provider.id)
         )
         // 8pt here (+ 4pt internal) so the provider header uses the same inset as the Customize screen —
         // both land the provider name at the same offset from the popover edge.

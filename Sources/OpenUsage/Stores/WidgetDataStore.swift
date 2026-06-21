@@ -1,6 +1,14 @@
 import Foundation
 import Observation
 
+/// A compact staleness hint for a provider's on-screen snapshot. `label` is a short, fixed word
+/// ("Outdated") that stays narrow next to long plan names like "Super Grok Heavy", while the precise
+/// age lives in `tooltip` ("Last updated 3h 12m ago"), revealed on hover.
+struct StalenessHint: Equatable {
+    let label: String
+    let tooltip: String
+}
+
 @MainActor
 @Observable
 final class WidgetDataStore {
@@ -237,19 +245,20 @@ final class WidgetDataStore {
     /// per-cycle aging, which would flicker a hint on healthy providers.
     static let stalenessThreshold = RefreshSetting.interval * 2
 
-    /// A muted "Updated 3h ago" hint for the provider's on-screen snapshot, surfaced only once that
-    /// snapshot has aged past `stalenessThreshold`; `nil` while the data is still current (the common
-    /// case), so the header stays clean until staleness is real. This is the visible counterpart to the
-    /// silent fossilized-cache problem (#582): a failing-refresh loop keeps the last good plan/limits on
-    /// screen, and without this nothing told the user that data was stale. Reads the store's injected
-    /// clock, which tests pin to a fixed value.
-    func stalenessLabel(for providerID: String) -> String? {
+    /// A compact "Outdated" hint for the provider's on-screen snapshot, surfaced only once that snapshot
+    /// has aged past `stalenessThreshold`; `nil` while the data is still current (the common case), so the
+    /// header stays clean until staleness is real. The label is short on purpose — a long plan name plus a
+    /// full "Updated 3h ago" string would overflow the header — so the precise age rides in the tooltip.
+    /// This is the visible counterpart to the silent fossilized-cache problem (#582): a failing-refresh
+    /// loop keeps the last good plan/limits on screen, and without this nothing told the user that data was
+    /// stale. Reads the store's injected clock, which tests pin to a fixed value.
+    func stalenessHint(for providerID: String) -> StalenessHint? {
         guard let refreshedAt = snapshots[providerID]?.refreshedAt else { return nil }
         let age = now().timeIntervalSince(refreshedAt)
         guard age >= Self.stalenessThreshold, let duration = Formatters.compactDuration(age) else {
             return nil
         }
-        return "Updated \(duration) ago"
+        return StalenessHint(label: "Outdated", tooltip: "Last updated \(duration) ago")
     }
 
     var menuBarPrimaryText: String {
