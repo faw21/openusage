@@ -213,6 +213,9 @@ final class StatusItemController: NSObject {
         guard let button = statusItem.button else { return }
         button.target = self
         button.action = #selector(statusButtonClicked)
+        // Left-click toggles the popover; right-click (or control-click) drops the context menu.
+        // Both arrive through `statusButtonClicked`, which branches on the triggering event.
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
     /// A resizable rounded-rectangle mask so the `behindWindow` glass gets clean rounded corners
@@ -275,7 +278,47 @@ final class StatusItemController: NSObject {
     // MARK: - Show / hide
 
     @objc private func statusButtonClicked() {
-        togglePopover()
+        let event = NSApp.currentEvent
+        let isContextClick = event?.type == .rightMouseUp
+            || event?.modifierFlags.contains(.control) == true
+        if isContextClick {
+            showContextMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    /// Right-click / control-click on the status item: a native menu mirroring the popover footer's
+    /// "More" items for Settings and Quit (same titles, symbols, and ⌘ shortcuts). Assigning
+    /// `statusItem.menu` for the span of one `performClick` shows the menu anchored under the item and
+    /// highlights the button, then clearing it restores the left-click toggle behavior.
+    private func showContextMenu() {
+        // The context menu is a distinct gesture from the left-click popover: close an open panel
+        // first so the menu opens over a clean state (no leftover button highlight, no live
+        // outside-click monitors racing the menu's own modal tracking).
+        if panel.isVisible { hidePanel() }
+
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(title: "Settings", systemSymbol: "gearshape", keyEquivalent: ",") { [weak self] in
+            self?.openSettings()
+        })
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Quit OpenUsage", systemSymbol: "power", keyEquivalent: "q") {
+            NSApplication.shared.terminate(nil)
+        })
+
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    /// Opens the dashboard popover on the Settings screen — Settings is an in-popover screen, not a
+    /// separate window. The screen is set before showing the panel so it opens already sized to Settings.
+    private func openSettings() {
+        container.layout.screen = .settings
+        if !panel.isVisible {
+            showPanel()
+        }
     }
 
     func togglePopover() {
