@@ -20,23 +20,36 @@ struct ProviderSectionHeader<Trailing: View>: View {
     /// (dashboard only; `nil` in Customize / reorder previews, which never surface staleness). Its tooltip
     /// carries the precise age.
     var staleness: StalenessHint?
+    /// Dashboard-only: when true, a small dot-grid grip leads the name to signal the header line is
+    /// draggable (providers reorder by dragging the header). Off in Customize, which carries its own
+    /// trailing grip.
+    var showsDragHandle: Bool = false
     private let trailing: Trailing
 
     /// Header type and icon track the density setting like the rows do, so Compact shrinks the
     /// whole section anatomy — not just the rows under it.
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
 
-    init(provider: Provider, plan: String? = nil, warning: String? = nil, refreshing: Bool = false, staleness: StalenessHint? = nil, @ViewBuilder trailing: () -> Trailing) {
+    init(provider: Provider, plan: String? = nil, warning: String? = nil, refreshing: Bool = false, staleness: StalenessHint? = nil, showsDragHandle: Bool = false, @ViewBuilder trailing: () -> Trailing) {
         self.provider = provider
         self.plan = plan
         self.warning = warning
         self.refreshing = refreshing
         self.staleness = staleness
+        self.showsDragHandle = showsDragHandle
         self.trailing = trailing()
     }
 
     var body: some View {
         HStack(spacing: 5) {
+            // A grip leading the name marks the header line as draggable to reorder providers. The
+            // whole line still carries the gesture; this just makes the affordance discoverable.
+            if showsDragHandle {
+                // Purely a visual affordance (the whole header line carries the drag gesture). The
+                // extra trailing gap keeps the grip from crowding the provider name beside it.
+                DragHandleGrip()
+                    .padding(.trailing, 4)
+            }
             // Baseline-aligned pair: the plan badge is smaller type, so centering it against
             // the name leaves it floating high — text sits together only on a shared baseline.
             HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -83,15 +96,18 @@ struct ProviderSectionHeader<Trailing: View>: View {
                 .frame(width: density.headerIconSize, height: density.headerIconSize)
             trailing
         }
-        .padding(.horizontal, 4)
+        // With the grip leading, shave the left inset so the handle sits a touch closer to the card's
+        // left edge; Customize (no grip) keeps the symmetric inset so its name doesn't shift.
+        .padding(.leading, showsDragHandle ? 2 : 4)
+        .padding(.trailing, 4)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 }
 
 extension ProviderSectionHeader where Trailing == EmptyView {
-    init(provider: Provider, plan: String? = nil, warning: String? = nil, refreshing: Bool = false, staleness: StalenessHint? = nil) {
-        self.init(provider: provider, plan: plan, warning: warning, refreshing: refreshing, staleness: staleness) { EmptyView() }
+    init(provider: Provider, plan: String? = nil, warning: String? = nil, refreshing: Bool = false, staleness: StalenessHint? = nil, showsDragHandle: Bool = false) {
+        self.init(provider: provider, plan: plan, warning: warning, refreshing: refreshing, staleness: staleness, showsDragHandle: showsDragHandle) { EmptyView() }
     }
 }
 
@@ -118,5 +134,30 @@ struct ReorderGrip: View {
             .foregroundStyle(.tertiary)
             .frame(width: 16, height: 22)
             .contentShape(Rectangle())
+    }
+}
+
+/// The 2×3 dot-grid grip that leads the dashboard provider name. Kept quiet (tertiary) so it reads
+/// as an affordance hinting the header line can be dragged to reorder providers, not as a control
+/// competing with the name beside it.
+struct DragHandleGrip: View {
+    var body: some View {
+        VStack(spacing: 2) {
+            ForEach(0..<3) { _ in
+                HStack(spacing: 2) {
+                    dot
+                    dot
+                }
+            }
+        }
+        .frame(height: 22)
+        .contentShape(Rectangle())
+        .accessibilityHidden(true)
+    }
+
+    private var dot: some View {
+        Circle()
+            .fill(.tertiary)
+            .frame(width: 1.75, height: 1.75)
     }
 }

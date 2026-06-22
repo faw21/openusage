@@ -76,7 +76,7 @@ struct ReorderLiftPreview: View {
         // Same anatomy as the live dashboard section (`WidgetGroupedListView.section` + `container`):
         // header over the shared metric card, at the density's header→card spacing.
         VStack(alignment: .leading, spacing: density.headerToCardSpacing) {
-            ProviderSectionHeader(provider: provider, plan: plan)
+            ProviderSectionHeader(provider: provider, plan: plan, showsDragHandle: true)
                 .padding(.horizontal, 8)
 
             DashboardMetricCard(lifted: true) {

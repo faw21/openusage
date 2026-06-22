@@ -34,8 +34,9 @@ enum DensitySetting: String, Hashable, Sendable, CaseIterable {
     /// of reading as a second heavy line.
     var supportingPointSize: CGFloat { self == .compact ? 11 : 12 }
 
-    /// Provider name in the section header.
-    var headerPointSize: CGFloat { self == .compact ? 12 : 13 }
+    /// Provider name in the section header — a touch larger than the metric label below it so the
+    /// section title reads as the heaviest thing in the group.
+    var headerPointSize: CGFloat { self == .compact ? 13 : 14 }
 
     /// Provider mark in the section header.
     var headerIconSize: CGFloat { self == .compact ? 14 : 16 }
@@ -58,7 +59,7 @@ enum DensitySetting: String, Hashable, Sendable, CaseIterable {
     /// Top padding for a text-only row sitting directly under another text-only row — the
     /// neighbor-aware rule, active in **both** densities so runs of one-liners (Today / Yesterday /
     /// Last 30 Days) always read as one cluster; Compact pulls them a step harder.
-    var condensedTextRowTopPadding: CGFloat { self == .compact ? 2 : 3 }
+    var condensedTextRowTopPadding: CGFloat { self == .compact ? 1 : 2 }
 
     /// Spacing inside a bounded row between the label, the meter, and the reading line.
     var rowInnerSpacing: CGFloat { self == .compact ? 3 : 4 }

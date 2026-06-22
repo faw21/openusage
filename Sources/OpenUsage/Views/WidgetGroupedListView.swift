@@ -48,10 +48,11 @@ struct WidgetGroupedListView: View {
             plan: dataStore.plan(for: group.provider.id),
             warning: dataStore.errorMessage(for: group.provider.id),
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
-            staleness: dataStore.stalenessHint(for: group.provider.id)
+            staleness: dataStore.stalenessHint(for: group.provider.id),
+            showsDragHandle: true
         )
-        // 8pt here (+ 4pt internal) so the provider header uses the same inset as the Customize screen —
-        // both land the provider name at the same offset from the popover edge.
+        // 8pt (+ 4pt internal) on both sides: insets the drag grip off the card's left edge and
+        // lines the provider mark up with the card's right content edge.
         .padding(.horizontal, 8)
         .highPriorityGesture(providerDragGesture(for: group))
         .contextMenu {
