@@ -14,11 +14,19 @@ struct ProviderSnapshotCache {
     /// safe to share.
     private let memo = OSAllocatedUnfairLock<Payload?>(initialState: nil)
 
+    /// Provider IDs whose snapshot was written by `store` *during this cache instance's lifetime* (i.e.
+    /// this running session). The freshness gate (`snapshot(providerID:)`) trusts a snapshot only when
+    /// its provider is in here — so a snapshot loaded from disk on launch is shown (via `loadSnapshots`)
+    /// but never counts as fresh, forcing one refresh on the first post-launch pass. Lock-backed for the
+    /// same reason as `memo`: the value-type cache shares it across copies and stays safe. See #697.
+    private let sessionWrites = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+
     private let userDefaults: UserDefaults
     private let storageKey: String
-    /// A snapshot stays fresh for exactly one refresh interval, which is what lets cached data survive a
-    /// relaunch without an immediate refetch and expire precisely when the next refresh is due. Tests
-    /// inject a fixed TTL for a deterministic freshness window.
+    /// A snapshot written this session stays fresh for exactly one refresh interval, then expires so the
+    /// periodic loop refetches on schedule. A snapshot loaded from a *previous* session (off disk) is never
+    /// fresh regardless of its `refreshedAt` — see `sessionWrites`. Tests inject a fixed TTL for a
+    /// deterministic freshness window.
     private let ttl: TimeInterval
     private let now: () -> Date
     private let encoder: JSONEncoder
@@ -65,11 +73,16 @@ struct ProviderSnapshotCache {
     func snapshot(providerID: String) -> ProviderSnapshot? {
         let snapshot = loadPayload().snapshots[providerID]
         guard let snapshot else { return nil }
-        // Inlined the freshness check so the staleness can be logged (age vs ttl -> fresh|stale);
-        // behavior is identical to the prior `isValid` helper.
+        // Freshness has two requirements, and disk age alone is not enough: the snapshot must have been
+        // written *this session* AND still be within TTL. A snapshot served from a previous session's
+        // persisted blob is shown for instant paint but never gates a refresh, so every launch refetches
+        // promptly instead of waiting out the previous session's remaining interval (#697).
+        let writtenThisSession = sessionWrites.withLock { $0.contains(providerID) }
         let age = now().timeIntervalSince(snapshot.refreshedAt)
-        let fresh = age < ttl
-        AppLog.debug(.cache, "\(providerID) staleness \(Int(age))s vs ttl \(Int(ttl))s -> \(fresh ? "fresh" : "stale")")
+        let fresh = writtenThisSession && age < ttl
+        let reason = !writtenThisSession ? "stale (not written this session)"
+            : fresh ? "fresh" : "stale"
+        AppLog.debug(.cache, "\(providerID) staleness \(Int(age))s vs ttl \(Int(ttl))s -> \(reason)")
         return fresh ? snapshot : nil
     }
 
@@ -79,6 +92,9 @@ struct ProviderSnapshotCache {
             return
         }
         AppLog.debug(.cache, "write \(snapshot.providerID)")
+        // Mark this provider as written *this session* so its snapshot now satisfies the freshness gate
+        // (a launch-loaded snapshot never does — see `sessionWrites`).
+        sessionWrites.withLock { $0.insert(snapshot.providerID) }
         var payload = loadPayload()
         payload.snapshots[snapshot.providerID] = snapshot
         save(payload)
