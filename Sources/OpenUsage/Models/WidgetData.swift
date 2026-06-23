@@ -23,6 +23,12 @@ struct WidgetData: Hashable {
     var displayMode: WidgetDisplayMode = .used
     /// Global relative/absolute reset display, stamped by `WidgetDataStore` (like `displayMode`).
     var resetDisplayMode: ResetDisplayMode = .relative
+    /// Global "always show pacing" opt-in, stamped by `WidgetDataStore` (like `displayMode`). When on,
+    /// `meterState(now:)` surfaces pacing on the otherwise-silent on-track rows: the blue/healthy row
+    /// gains its projection copy + an even-pace tick, and the amber tick switches from the slack edge to
+    /// the same even-pace line. Off (default) leaves every row exactly as it was. The red run-out states
+    /// never gain a tick either way — the flame + run-out time already carry the message there.
+    var alwaysShowPacing: Bool = false
     var resetsAt: Date?
     /// Zero or more future expiry instants surfaced in the row's hover tooltip (Codex rate-limit-reset
     /// credits — one entry per still-available credit). Empty for every other row. Kept as raw `Date`s so
@@ -87,10 +93,12 @@ struct WidgetData: Hashable {
     }
 
     /// The meter's full visual state, derived once (`meterState(now:)`) so the bar color, the
-    /// amber tick, and the label-line warning copy can never contradict each other. Precedence,
+    /// tick, and the label-line warning copy can never contradict each other. Precedence,
     /// highest first: no data → spent → live pace verdict → absolute level bands. Each case owns
     /// exactly the data its rendering needs, so impossible combinations (a tick on a red bar, a
-    /// run-out time with no flame) can't be expressed.
+    /// run-out time with no flame) can't be expressed. A tick lives only on the on-track cases
+    /// (`closeToLimit` always; `healthy` only when "always show pacing" is on) — the red run-out
+    /// states carry the flame instead, so a tick never sits on a red bar.
     enum MeterState: Hashable {
         /// No real metric backs the tile — gray, empty track, no copy.
         case noData
@@ -104,7 +112,8 @@ struct WidgetData: Hashable {
         /// rounds to 0%
         /// (≤ limit, so there's no run-out time) — in both cases the flame shows alone rather than a
         /// misleading "0s" or a "~0% spare" amber bar. `projectedFraction` (projected end-of-period
-        /// usage ÷ limit) backs the tooltip's overage / "lands at the limit" copy.
+        /// usage ÷ limit) backs the tooltip's overage / "lands at the limit" copy. Carries no tick —
+        /// a behind bar is the flame's job, never a notch.
         case runningOut(eta: String?, projectedFraction: Double)
         /// Projected to land inside the last 10% — cutting it close — but still with a cushion of at
         /// least 1%. (A cushion that rounds to 0% promotes to `runningOut` instead, so amber never
@@ -114,9 +123,13 @@ struct WidgetData: Hashable {
         /// remaining − spare in Left view, so it's the last slice of the fill — see
         /// `WidgetRowView.meter`). `projectedFraction` backs the tooltip's "% used at reset" copy.
         case closeToLimit(spare: String, tick: Double, projectedFraction: Double)
-        /// On course to finish with ≥10% to spare. Blue, no decoration. `projectedFraction` backs the
-        /// tooltip's "% left at reset" cushion copy.
-        case healthy(projectedFraction: Double)
+        /// On course to finish with ≥10% to spare. Blue. By default it carries no decoration; when
+        /// "always show pacing" is on it surfaces the projection copy ("~N% left at reset") and
+        /// `evenPaceTick` is set — the even-pace line, anchored to the side the fill leaves open (out
+        /// in the gray ahead of the fill in Left view, inside the fill in Used view), so the row reads
+        /// "you're ahead of pace" at a glance. `nil` when the setting is off. `projectedFraction` backs
+        /// the tooltip's "% left at reset" cushion copy.
+        case healthy(projectedFraction: Double, evenPaceTick: Double?)
         /// No pace signal to project (no reset window, or <5% of it elapsed): color from the
         /// absolute level bands on the share used, no copy.
         case level(MeterSeverity)
@@ -143,7 +156,7 @@ struct WidgetData: Hashable {
             switch self {
             case .noData, .level: return nil
             case .spent: return "Limit reached"
-            case .healthy(let projectedFraction):
+            case .healthy(let projectedFraction, _):
                 let left = Int(((1 - projectedFraction) * 100).rounded())
                 return "~\(left)% left at reset"
             case .closeToLimit(_, _, let projectedFraction):
@@ -154,6 +167,18 @@ struct WidgetData: Hashable {
                 // Floored to 1% so a bar projected even slightly over never reads "~0% over limit".
                 let over = max(1, Int(((projectedFraction - 1) * 100).rounded()))
                 return "~\(over)% over limit at reset"
+            }
+        }
+
+        /// The tick position on the bar (0...1), or `nil` when the bar carries no tick. Lives on the
+        /// on-track cases only — `closeToLimit` always, `healthy` when "always show pacing" set its
+        /// `evenPaceTick`. The red run-out states and the plain level/no-data states never have one, so
+        /// a tick can never appear on a red bar.
+        var tick: Double? {
+            switch self {
+            case .closeToLimit(_, let tick, _): return tick
+            case .healthy(_, let evenPaceTick): return evenPaceTick
+            case .noData, .spent, .runningOut, .level: return nil
             }
         }
     }
@@ -422,9 +447,22 @@ extension WidgetData {
         if let ctx = paceContext,
            let result = Pace.evaluate(used: used, limit: ctx.limit, resetsAt: ctx.resetsAt,
                                       periodDuration: ctx.period, now: now) {
+            // The even-pace line: where a perfectly steady user would sit right now — the elapsed
+            // fraction of the period, recovered as used ÷ projected-usage (projected = used ÷ elapsed,
+            // so the dates cancel). Placed to read as "ahead" against the bar's framing: in Left
+            // (remaining) view — the common one — it sits out in the gray ahead of the fill; in Used
+            // view it sits inside the fill. (These are mirror positions; we anchor to whichever side
+            // the fill leaves open so a healthy bar's tick never buries itself in the fill in Left
+            // view.) Only surfaced when "always show pacing" is on; otherwise `nil` leaves every row as it was.
+            let evenPaceTick: Double? = {
+                guard alwaysShowPacing, result.projectedUsage > 0 else { return nil }
+                let elapsed = min(max(used / result.projectedUsage, 0), 1)
+                return displayMode == .remaining ? elapsed : 1 - elapsed
+            }()
             switch result.status {
             case .ahead:
-                return .healthy(projectedFraction: result.projectedUsage / ctx.limit)
+                return .healthy(projectedFraction: result.projectedUsage / ctx.limit,
+                                evenPaceTick: evenPaceTick)
             case .onTrack:
                 let projected = result.projectedUsage / ctx.limit
                 let spare = Int(((1 - projected) * 100).rounded())
@@ -435,8 +473,11 @@ extension WidgetData {
                 // tooltip reads "~100% used at reset", exactly `runningOut`'s documented float-edge meaning.
                 guard spare >= 1 else { return .runningOut(eta: nil, projectedFraction: projected) }
                 let usedShare = used / ctx.limit
-                let tick = displayMode == .remaining ? projected - usedShare
-                                                     : usedShare + (1 - projected)
+                // Default: the slack-edge tick (used + spare). When "always show pacing" is on, switch
+                // to the even-pace line so the tick means the same thing on every on-track bar.
+                let slackTick = displayMode == .remaining ? projected - usedShare
+                                                          : usedShare + (1 - projected)
+                let tick = evenPaceTick ?? slackTick
                 return .closeToLimit(spare: "~\(spare)% spare", tick: tick, projectedFraction: projected)
             case .behind:
                 let eta = Pace.secondsToRunOut(used: used, limit: ctx.limit, resetsAt: ctx.resetsAt,

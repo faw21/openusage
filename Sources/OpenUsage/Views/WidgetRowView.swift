@@ -121,7 +121,8 @@ struct WidgetRowView: View {
     }
 
     /// The single escalating warning slot, switching exhaustively over the state so the copy can
-    /// never contradict the bar. The flame cases share one builder; the amber case is plain text.
+    /// never contradict the bar. The flame cases share one builder; the amber and (always-show-pacing)
+    /// blue cases are plain text.
     @ViewBuilder
     private func warning(_ state: WidgetData.MeterState) -> some View {
         switch state {
@@ -144,6 +145,19 @@ struct WidgetRowView: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .hoverTooltip(state.tooltip)
+        case .healthy where data.alwaysShowPacing:
+            // "Always show pacing" surfaces the projection on the otherwise-silent on-track row: the
+            // same quiet secondary note as the amber case, but the cushion ("~33% left at reset")
+            // rather than the spare. No flame (blue isn't a warning) and no hover tooltip — the copy
+            // already *is* the projection the amber case hides in its tooltip.
+            if let projection = state.tooltip {
+                Spacer(minLength: 8)
+                Text(projection)
+                    .font(supportingFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
         case .noData, .healthy, .level:
             EmptyView()
         }
@@ -323,20 +337,22 @@ struct WidgetRowView: View {
     /// `MeterState.severity`), softened for the popover glass via `Theme.glassTint` — explicit
     /// colors get no vibrancy adaptation there; the earlier provider-brand gradient was removed
     /// deliberately so the bar's color always reads as state.
-    /// Empty + colorless without data. In the `closeToLimit` (amber) state a thin tick fences the
-    /// spare-width sliver off **at the fill's edge** — a glanceable "this sliver is all the slack
-    /// you've got", pinned to current usage rather than to either end of the track: in Used view
-    /// the sliver is the empty slice between the fill's edge and the tick (used + spare); in Left
-    /// view it's the last slice of the fill, between the tick and the edge (remaining − spare).
-    /// (Tried and rejected: an even-pace tick on every bar, read as "where I'll end up"; the tick
-    /// at the projected landing point, which hugged a track end far from the fill where it read
-    /// as an artifact; and right-anchoring the Left fill, which read as an RTL glitch.) Drawing
-    /// the tick from the `closeToLimit` case means a red or blue bar structurally cannot carry
-    /// it. Hovering shows the pace projection (`MeterState.tooltip`). Hidden from accessibility — the
-    /// headline text carries the exact value, and the label line's warning copy carries the amber
-    /// and red cases.
+    /// Empty + colorless without data. By default a thin tick appears only in the `closeToLimit`
+    /// (amber) state, fencing the spare-width sliver off **at the fill's edge** — a glanceable "this
+    /// sliver is all the slack you've got", pinned to current usage rather than to either end of the
+    /// track: in Used view the sliver is the empty slice between the fill's edge and the tick (used +
+    /// spare); in Left view it's the last slice of the fill, between the tick and the edge (remaining −
+    /// spare). With "always show pacing" on, the tick instead marks the **even-pace line** (where a
+    /// steady user would be right now) and also appears on the blue `healthy` bar. The red run-out
+    /// states carry no tick — the flame + run-out time is the message there. The tick rides in an
+    /// overlay (see below) so it pokes out top and bottom without changing the bar's height. Hovering
+    /// shows the pace projection (`MeterState.tooltip`). Hidden from accessibility — the headline text
+    /// carries the exact value, and the label line's warning copy carries the amber and red cases.
     private func meter(_ state: WidgetData.MeterState) -> some View {
         GeometryReader { proxy in
+            // Track + fill define the bar's height; the tick rides in an `.overlay` so its taller frame
+            // pokes out top and bottom without stretching the capsules. (As a ZStack sibling it grew the
+            // stack and the flexible capsules stretched with it, so a tick'd bar read as a thicker bar.)
             ZStack(alignment: .leading) {
                 // Semantic quaternary fill (not an opacity-faded color) so the track stays vibrant
                 // on glass and adapts to Increase Contrast / Reduce Transparency.
@@ -344,10 +360,12 @@ struct WidgetRowView: View {
                 Capsule()
                     .fill(severityColor(state.severity))
                     .frame(width: fillWidth(track: proxy.size.width))
-                if case .closeToLimit(_, let tick, _) = state {
+            }
+            .overlay(alignment: .leading) {
+                if let tick = state.tick {
                     RoundedRectangle(cornerRadius: 1)
                         .fill(Color.primary.opacity(0.55))
-                        .frame(width: Self.paceTickWidth, height: density.meterHeight + 3)
+                        .frame(width: Self.paceTickWidth, height: density.meterHeight + Self.paceTickOverhang)
                         .offset(x: paceTickOffset(track: proxy.size.width, fraction: tick))
                 }
             }
@@ -359,6 +377,9 @@ struct WidgetRowView: View {
     }
 
     private static let paceTickWidth: CGFloat = 2
+    /// How much taller than the bar the tick is, so it pokes out slightly above and below (half each
+    /// end). The bar itself stays at `meterHeight` regardless — the tick lives in an overlay.
+    private static let paceTickOverhang: CGFloat = 4
 
     /// Leading offset that centers the tick on its fraction, clamped so the tick never pokes past
     /// either rounded end of the track.

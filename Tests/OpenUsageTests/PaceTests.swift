@@ -196,4 +196,66 @@ final class PaceTests: XCTestCase {
         XCTAssertEqual(eta ?? 0, 0.33 * week, accuracy: week * 0.01) // projected exhaustion ≈ ⅓ of a week out
         XCTAssertNil(Pace.secondsToRunOut(used: 30, limit: 100, resetsAt: reset, periodDuration: week, now: now)) // ahead → nil
     }
+
+    // MARK: Always Show Pacing (the opt-in even-pace tick + healthy copy)
+
+    /// `used` percent of 100 with `elapsed` of the window gone (projected = used / elapsed),
+    /// optionally opting into "always show pacing".
+    private func pacedData(used: Double, elapsed: Double, displayMode: WidgetDisplayMode = .used,
+                           alwaysShowPacing: Bool = false) -> WidgetData {
+        var data = WidgetData(title: "Weekly", icon: .symbol("clock"), kind: .percent,
+                              used: used, limit: 100, displayMode: displayMode)
+        data.resetsAt = resetsAt(elapsed: elapsed, period: week)
+        data.periodDurationMs = Int(week * 1000)
+        data.alwaysShowPacing = alwaysShowPacing
+        return data
+    }
+
+    /// The even-pace tick fraction carried by the blue `healthy` bar (nil unless always-show is on).
+    private func healthyTick(_ data: WidgetData) -> Double? {
+        if case .healthy(_, let tick) = data.meterState(now: now) { return tick }
+        return nil
+    }
+
+    func testHealthyBarHasNoTickByDefault() {
+        // Off (default): the blue/healthy bar carries no even-pace tick (projected 75% → ahead).
+        XCTAssertNil(healthyTick(pacedData(used: 30, elapsed: 0.4)))
+    }
+
+    func testAlwaysShowPacingAddsEvenPaceTickToHealthyBar() {
+        // On: the blue bar gains the even-pace line (elapsed fraction = used ÷ projected = 30/75 = 0.4).
+        // It's anchored to the side the fill leaves open: Left/remaining view puts it ahead in the gray
+        // at the elapsed fraction (0.4); Used view mirrors it to 1 − 0.4 = 0.6, inside the fill.
+        XCTAssertEqual(healthyTick(pacedData(used: 30, elapsed: 0.4, displayMode: .remaining,
+                                             alwaysShowPacing: true)) ?? -1,
+                       0.4, accuracy: 0.001)
+        XCTAssertEqual(healthyTick(pacedData(used: 30, elapsed: 0.4, alwaysShowPacing: true)) ?? -1,
+                       0.6, accuracy: 0.001)
+    }
+
+    func testAlwaysShowPacingSwitchesAmberTickToTheEvenPaceLine() {
+        // Amber (used 46, half the window gone → projected 92%). Default tick is the slack edge
+        // (0.46 + 0.08 spare = 0.54); with always-show on it becomes the even-pace line
+        // (used ÷ projected = 46/92 = 0.5). The "~N% spare" copy is unaffected either way.
+        XCTAssertEqual(tick(pacedData(used: 46, elapsed: 0.5)) ?? -1, 0.54, accuracy: 0.001)
+        XCTAssertEqual(tick(pacedData(used: 46, elapsed: 0.5, alwaysShowPacing: true)) ?? -1,
+                       0.5, accuracy: 0.001)
+        XCTAssertEqual(spare(pacedData(used: 46, elapsed: 0.5, alwaysShowPacing: true)), "~8% spare")
+    }
+
+    func testAlwaysShowPacingNeverPutsATickOnARedBar() {
+        // Behind (projected 120%) and spent both stay tick-free even with the setting on — the flame
+        // and "Limit reached" / run-out time carry the message on a red bar, never a notch.
+        XCTAssertNil(pacedData(used: 60, elapsed: 0.5, alwaysShowPacing: true).meterState(now: now).tick)
+        XCTAssertNil(pacedData(used: 100, elapsed: 0.5, alwaysShowPacing: true).meterState(now: now).tick)
+    }
+
+    func testAlwaysShowPacingLeavesRowsWithoutPaceSignalPlain() {
+        // No reset window → no pace signal → nothing to project, so no tick even with the setting on.
+        var data = WidgetData(title: "Credits", icon: .symbol("creditcard"), kind: .dollars,
+                              used: 12, limit: 20)
+        data.alwaysShowPacing = true
+        XCTAssertNil(data.meterState(now: now).tick)
+        XCTAssertNil(data.meterState(now: now).tooltip)
+    }
 }

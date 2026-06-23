@@ -27,6 +27,7 @@ final class WidgetDataStore {
 
     private static let meterStyleKey = "meterStyle"
     private static let resetDisplayModeKey = "resetDisplayMode"
+    private static let alwaysShowPacingKey = "alwaysShowPacing"
     /// How long a provider that just failed is skipped before the loop will probe it again. A failed
     /// refresh isn't cached, so — unlike a success, which the snapshot cache gates for an interval —
     /// nothing else stops the loop from re-probing a broken provider (logged-out Devin/Grok especially)
@@ -64,6 +65,13 @@ final class WidgetDataStore {
         didSet { defaults.set(resetDisplayMode.rawValue, forKey: Self.resetDisplayModeKey) }
     }
 
+    /// Global "always show pacing" opt-in: when on, on-track rows surface their pace projection (the
+    /// blue/healthy row gains its "~N% left at reset" copy + an even-pace tick, the amber tick switches
+    /// to the same even-pace line). Persisted across relaunch; defaults to `false` (every row unchanged).
+    var alwaysShowPacing: Bool {
+        didSet { defaults.set(alwaysShowPacing, forKey: Self.alwaysShowPacingKey) }
+    }
+
     init(
         registry: WidgetRegistry,
         providers: [ProviderRuntime],
@@ -82,6 +90,7 @@ final class WidgetDataStore {
         self.now = now
         self.meterStyle = defaults.enumValue(forKey: Self.meterStyleKey, default: .remaining)
         self.resetDisplayMode = defaults.enumValue(forKey: Self.resetDisplayModeKey, default: .relative)
+        self.alwaysShowPacing = defaults.bool(forKey: Self.alwaysShowPacingKey)
         // Stale-while-revalidate: load whatever was cached (expired included) so the menu bar and
         // dashboard show last-known values immediately at launch instead of "—"; the refresh loop
         // replaces them as soon as fresh data lands.
@@ -229,6 +238,7 @@ final class WidgetDataStore {
         // unbounded tiles (limit == nil), whose displayed value ignores displayMode.
         result.displayMode = meterStyle
         result.resetDisplayMode = resetDisplayMode
+        result.alwaysShowPacing = alwaysShowPacing
         return result
     }
 
