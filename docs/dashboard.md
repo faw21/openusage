@@ -30,7 +30,7 @@ Provider headers: **Hide \<provider\> · Refresh \<provider\> · Customize…** 
 
 ## Customize
 
-The More button's **Customize Metrics** item (or pressing **Return**) opens Customize: toggle metrics on/off, add ones that aren't placed yet, pin metrics for the menu bar, and drag to reorder. Drag-reorder also works directly on the dashboard — drag a row within its provider, or drag a provider header to reorder sections. On a Force Touch trackpad you'll feel a light tap each time the dragged item snaps into a new slot.
+The More button's **Customize Metrics** item (or pressing **Return**) opens Customize: toggle metrics on/off, add ones that aren't placed yet, pin metrics for the menu bar, and drag to reorder. Drag-reorder also works directly on the dashboard — drag a row within its provider, drag it across the caret boundary while the card is open, or drag a provider header to reorder sections. On a Force Touch trackpad you'll feel a light tap each time the dragged item snaps into a new slot.
 
 Each provider card has a dashed **Shown on Expand** line. Metrics above it are always shown; metrics below it hide behind the dashboard caret. Drag a metric onto the dashed line to move it across the fold, or drag it onto a row on the other side — drop a metric under an expanded one and it becomes expanded too. Pinning, hiding, and order all work the same on either side.
 
