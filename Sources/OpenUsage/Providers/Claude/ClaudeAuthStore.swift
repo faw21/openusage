@@ -57,7 +57,10 @@ enum ClaudeAuthError: Error, LocalizedError, Equatable {
         switch self {
         case .sessionExpired, .tokenExpired:
             return true
-        case .notLoggedIn:
+        case .notLoggedIn, .invalidOAuthURL:
+            // No credentials at all, or a malformed custom OAuth URL: there's nothing better to try —
+            // and a bad URL is a config error to surface (#700 "fail loudly"), not to paper over by
+            // silently trying another source.
             return false
         }
     }
