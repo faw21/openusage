@@ -57,7 +57,7 @@ enum ClaudeAuthError: Error, LocalizedError, Equatable {
         switch self {
         case .sessionExpired, .tokenExpired:
             return true
-        case .notLoggedIn:
+        case .notLoggedIn, .invalidOAuthURL:
             return false
         }
     }
@@ -347,5 +347,4 @@ struct ClaudeAuthStore: Sendable {
         return String(digest.map { String(format: "%02x", $0) }.joined().prefix(8))
     }
 }
-
 
