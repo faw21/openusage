@@ -34,6 +34,8 @@ The More button's **Customize Metrics** item (or pressing **Return**) opens Cust
 
 Each provider card has a dashed **Shown on Expand** line. Metrics above it are always shown; metrics below it hide behind the dashboard caret. Drag a metric onto the dashed line to move it across the fold, or drag it onto a row on the other side — drop a metric under an expanded one and it becomes expanded too. Pinning, hiding, and order all work the same on either side.
 
+The default reset layout keeps each provider's core quota meters and Usage Trend always shown, then tucks balances, reset details, and spend-history rows behind the caret. Optional detail rows like Claude Sonnet and Cursor Requests/Credits stay off by default, but start below the divider if you enable them.
+
 When OpenUsage ships a new default metric, existing layouts get it once. If you turn it off, it stays off. The **Reset** button in Customize restores the default metrics, order, menu-bar pins, and which metrics start behind the expand caret, but leaves provider settings and other preferences unchanged.
 
 ## Keyboard
