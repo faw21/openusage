@@ -78,11 +78,17 @@ struct PopoverKeyReader: NSViewRepresentable {
     /// Called on plain (unmodified) Return. Return `true` to consume it (e.g. toggling Customize);
     /// `false` lets the key fall through to a focused control.
     var onReturn: @MainActor () -> Bool = { false }
+    /// Called on ⌘, (Settings). Handled on this always-on monitor — the same one as Esc/Return — so it
+    /// works from every screen, including Settings, which has no footer to host a SwiftUI shortcut. The
+    /// More menu's Settings item carries ⌘, only as a *label*: while that menu is open the item handles
+    /// it, while it's closed this monitor does, so they never both fire.
+    var onSettings: @MainActor () -> Bool = { false }
 
     func makeNSView(context: Context) -> NSView {
         let view = MonitorView()
         view.onEscape = onEscape
         view.onReturn = onReturn
+        view.onSettings = onSettings
         return view
     }
 
@@ -90,6 +96,7 @@ struct PopoverKeyReader: NSViewRepresentable {
         guard let view = nsView as? MonitorView else { return }
         view.onEscape = onEscape
         view.onReturn = onReturn
+        view.onSettings = onSettings
     }
 
     /// Whether a bare-key keyDown belongs to the popover: its key window must *be* the panel. The
@@ -108,9 +115,11 @@ struct PopoverKeyReader: NSViewRepresentable {
     final class MonitorView: NSView {
         var onEscape: (@MainActor () -> Bool)?
         var onReturn: (@MainActor () -> Bool)?
+        var onSettings: (@MainActor () -> Bool)?
         private var monitor: Any?
         private static let escapeKeyCode: UInt16 = 53
         private static let returnKeyCode: UInt16 = 36
+        private static let commaKeyCode: UInt16 = 43
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -121,13 +130,21 @@ struct PopoverKeyReader: NSViewRepresentable {
             guard window != nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 let keyCode = event.keyCode
-                guard keyCode == MonitorView.escapeKeyCode || keyCode == MonitorView.returnKeyCode else {
+                guard keyCode == MonitorView.escapeKeyCode
+                    || keyCode == MonitorView.returnKeyCode
+                    || keyCode == MonitorView.commaKeyCode else {
                     return event
                 }
-                // Only bare Return navigates; ⌘⏎, ⌥⏎, etc. belong to other controls.
                 let isReturn = keyCode == MonitorView.returnKeyCode
+                let isComma = keyCode == MonitorView.commaKeyCode
+                // Only bare Return navigates; ⌘⏎, ⌥⏎, etc. belong to other controls.
                 if isReturn,
                    !event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                    return event
+                }
+                // Only plain ⌘, navigates; a bare comma (typing) or ⌥⌘, etc. belong elsewhere.
+                if isComma,
+                   event.modifierFlags.intersection([.command, .option, .control, .shift]) != [.command] {
                     return event
                 }
                 let eventWindowID = event.window.map(ObjectIdentifier.init)
@@ -137,6 +154,7 @@ struct PopoverKeyReader: NSViewRepresentable {
                     guard let self, let window = self.window, window.isVisible else { return false }
                     // The key must target the popover — its key window must be the panel, so a key
                     // pressed while a menu / About panel owns focus is left alone (see `keyTargetsPopover`).
+                    // This is also what hands ⌘, to an open More menu's own item instead of here.
                     guard PopoverKeyReader.keyTargetsPopover(
                         eventWindowID: eventWindowID,
                         popoverWindowID: ObjectIdentifier(window)
@@ -145,6 +163,9 @@ struct PopoverKeyReader: NSViewRepresentable {
                     // combo: the key belongs to it (insert / cancel / record), not to popover nav.
                     if window.firstResponder is NSText || ShortcutRecorderField.isRecordingActive {
                         return false
+                    }
+                    if isComma {
+                        return self.onSettings?() ?? false
                     }
                     if isReturn {
                         return self.onReturn?() ?? false

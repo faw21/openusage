@@ -10,11 +10,9 @@ import SwiftUI
 /// distinction, the scroll view still scrolls. Nothing here hides a runtime error — each branch is a
 /// compile-time `#available` check, which is the intended way to back-deploy newer-SDK APIs.
 ///
-/// These gate purely on OS version — the Reduce Transparency setting deliberately does *not* drop
-/// the glass controls (that downgraded the macOS 26 look to the macOS 15 one). Reduce Transparency
-/// instead makes the *surface* opaque (`PopoverSurface`) and frosts the cards (`Theme.cardSurface`),
-/// so the glass buttons stay glass — just rendered over a solid backing, which is the normal
-/// in-window look.
+/// These gate purely on OS version. The popover surface itself is always opaque — `PopoverSurface`
+/// paints `Theme.traySurface` with opaque grouped cards over it — and Liquid Glass is reserved for
+/// the footer's chrome controls here, rendered over that solid backing (the normal in-window look).
 ///
 /// Keeping every `#available(macOS 26, *)` check in this one file means the views (`HeaderView`,
 /// `SettingsScreen`, `DashboardView`) stay free of inline availability branches.
@@ -50,6 +48,23 @@ extension View {
             GlassEffectContainer(spacing: spacing) { self }
         } else {
             self
+        }
+    }
+
+    /// A custom interactive Liquid Glass surface (in the given shape) for a *control label* — the
+    /// footer "More" pull-down passes `Circle()`. Apply it to a `Menu`/`Button` label together with
+    /// `.buttonStyle(.plain)`: the system `.buttonStyle(.glass)` does **not** render glass on a `Menu` —
+    /// the menu's own button chrome wins and falls back to a flat bordered look (the "looks like macOS
+    /// 15" bug) — so we draw the glass ourselves on the label instead. `.interactive()` adds the
+    /// hover/press shimmer + scale that reads as Liquid Glass even on a static opaque surface. macOS 15
+    /// gets a frosted material shape with a hairline border (no glass to draw there).
+    @ViewBuilder
+    func interactiveGlass(in shape: some InsettableShape) -> some View {
+        if #available(macOS 26, *) {
+            glassEffect(.regular.interactive(), in: shape)
+        } else {
+            background(.regularMaterial, in: shape)
+                .overlay { shape.strokeBorder(.separator, lineWidth: 0.5) }
         }
     }
 

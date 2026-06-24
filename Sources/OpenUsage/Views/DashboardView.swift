@@ -39,11 +39,6 @@ struct DashboardView: View {
     @State private var dashboardScrollPosition = ScrollPosition(edge: .top)
     /// Row rhythm and the Customize height seed track the global density setting live.
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
-    /// Readability control. The app toggle is OR'd with macOS's own Reduce Transparency setting
-    /// (`accessibilityReduceTransparency`) into one `effectiveReduceTransparency` flag, pushed down
-    /// the tree so every surface renders in its solid form together.
-    @AppStorage(ReduceTransparencySetting.key) private var reduceTransparency = true
-    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
 
     private static let outerPadding: CGFloat = 14
     /// Breathing room between the bottom of the scrolling content and the pinned footer. Kept small
@@ -157,13 +152,6 @@ struct DashboardView: View {
             + (sectionCount - 1) * density.sectionSpacing
     }
 
-    /// The app's Reduce Transparency toggle OR macOS's own accessibility setting: either one drops
-    /// the popover to its solid, non-glass form. Resolved once here and injected so the surface,
-    /// controls, and meter tints all read the same answer.
-    private var effectiveReduceTransparency: Bool {
-        reduceTransparency || systemReduceTransparency
-    }
-
     var body: some View {
         modeBody
             .frame(width: Self.popoverWidth)
@@ -174,13 +162,10 @@ struct DashboardView: View {
             // The resize dragger is a persistent bar at the very bottom — on every screen, including
             // Settings — separate from the footer above it. It never slides; the pages slide above it.
             .safeAreaInset(edge: .bottom, spacing: 0) { resizeDragger }
-            // Paint the surface behind the content (and footer) and tell every descendant whether
-            // glass is on, so the fallbacks and the meter tints render in step. Both go on the
-            // outermost level of the chain so the footer, header buttons, and scroll content inherit.
-            .background(
-                PopoverSurface(reduce: effectiveReduceTransparency)
-            )
-            .environment(\.reduceTransparencyEffective, effectiveReduceTransparency)
+            // Paint the opaque tray behind the content (and footer) so the whole popover reads as one
+            // solid panel. Goes on the outermost level so the footer, header buttons, and scroll
+            // content all sit on it.
+            .background(PopoverSurface())
             .overlay(alignment: .topLeading) {
                 if let reorderLift {
                     ReorderLiftPreview(lift: reorderLift)
@@ -204,6 +189,18 @@ struct DashboardView: View {
                     onReturn: {
                         let target: PopoverScreen = layout.screen == .dashboard ? .customize : .dashboard
                         withAnimation(Motion.modeSwitch) { layout.screen = target }
+                        return true
+                    },
+                    // ⌘, toggles Settings, on this always-on monitor so it fires from every screen —
+                    // including Settings, which has no footer. Handling it here (and consuming it) is
+                    // also what lets the More menu's Settings item carry ⌘, purely as a label without a
+                    // second SwiftUI registration fighting it. (#717 made footers per-page and dropped
+                    // the Settings footer, so the old footer-hosted shortcut button no longer fired
+                    // there — ⌘, fell through to AppKit and defocused the panel.)
+                    onSettings: {
+                        withAnimation(Motion.modeSwitch) {
+                            layout.screen = layout.screen == .settings ? .dashboard : .settings
+                        }
                         return true
                     }
                 )
@@ -355,16 +352,16 @@ struct DashboardView: View {
             .fill(.tertiary)
             .frame(width: 36, height: 4)
             .frame(maxWidth: .infinity)
-            .frame(height: 10)
+            // A taller hit area than the 4pt handle, with extra room below so the handle sits up off
+            // the window's rounded bottom edge instead of hugging it. `contentShape` comes after the
+            // padding so the whole padded strip is draggable, not just the visible capsule.
+            .padding(.top, 8)
+            .padding(.bottom, 10)
             .contentShape(Rectangle())
-            // Settings has no footer above the dragger, so the grabber would float on bare glass and be
-            // hard to spot — give it a faint bar of its own there. The other screens have the footer right
-            // above it for context, so it stays backgroundless.
-            .background {
-                if layout.screen == .settings {
-                    Rectangle().fill(.bar)
-                }
-            }
+            // The grabber sits on the opaque popover tray on every screen, so it reads the same on all
+            // three — no screen-specific backing. It used to get a `.bar` fill on Settings (which has no
+            // footer above it) to stand out against the old glass surface, but on the solid tray that
+            // rendered as a lighter strip than the rest of the panel, and only on Settings.
             .pointerStyle(.frameResize(position: .bottom))
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .global)
@@ -606,23 +603,13 @@ struct DashboardView: View {
     }
 }
 
-/// The popover's backdrop: clear by default (so the system Liquid Glass shows through), an opaque
-/// window-colored fill when Reduce Transparency is on. With the default (glass on) it's
-/// `Color.clear` — the stock look, untouched. Never hit-tests so it can't steal clicks from the
-/// content above it.
+/// The popover's opaque backdrop tray, painted behind all content so the popover reads as one solid
+/// panel (Liquid Glass is reserved for the footer's chrome controls). Matches the AppKit panel
+/// backdrop (`StatusItemController`) — both `Theme.traySurface`. Never hit-tests, so it can't steal
+/// clicks from the content above it.
 private struct PopoverSurface: View {
-    let reduce: Bool
-
     var body: some View {
-        Group {
-            if reduce {
-                // Solid mode: the standard window background, so the popover reads like a normal
-                // opaque panel instead of sampling the desktop behind it.
-                Color(nsColor: .windowBackgroundColor)
-            } else {
-                Color.clear
-            }
-        }
-        .allowsHitTesting(false)
+        Theme.traySurface
+            .allowsHitTesting(false)
     }
 }

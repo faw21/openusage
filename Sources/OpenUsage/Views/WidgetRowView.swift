@@ -315,9 +315,8 @@ struct WidgetRowView: View {
     /// native linear `Gauge`/`ProgressView`, which Tahoe left as the thin legacy bar. The fill is
     /// a flat **system color** carrying the pace verdict (blue = well within limits, yellow =
     /// projected to land inside the last 10%, red = projected to run out; `Theme.meterFill` /
-    /// `MeterState.severity`), softened for the popover glass via `Theme.glassTint` — explicit
-    /// colors get no vibrancy adaptation there; the earlier provider-brand gradient was removed
-    /// deliberately so the bar's color always reads as state.
+    /// `MeterState.severity`) at full strength on the opaque popover surface; the earlier
+    /// provider-brand gradient was removed deliberately so the bar's color always reads as state.
     /// Empty + colorless without data. By default a thin tick appears only in the `closeToLimit`
     /// (amber) state, fencing the spare-width sliver off **at the fill's edge** — a glanceable "this
     /// sliver is all the slack you've got", pinned to current usage rather than to either end of the

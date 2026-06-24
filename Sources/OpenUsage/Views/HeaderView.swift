@@ -6,11 +6,15 @@ import SwiftUI
 /// top-leading back button (`DashboardView.navBar`) to return home — the macOS-native place for it — so
 /// the footer control simply drops away there rather than morphing into a trailing "Done".
 ///
-/// It's a SwiftUI `Menu` with `.menuStyle(.button)`: the native drop-down-button pattern, which draws the
-/// glass button plus a disclosure chevron and presents the menu itself. The menu renders in its own
-/// `NSMenu`-backed window, which `StatusItemController.shouldKeepPanelOpen` already keeps the popover open
-/// for (same rule that covers the Settings pickers' popups). A hidden ⌘, button preserves the system
-/// Settings shortcut from anywhere in the popover, since a menu's own key equivalents only fire while it's open.
+/// It's a SwiftUI `Menu` presenting a custom round Liquid Glass button: `.menuStyle(.button)` makes the
+/// menu present from a button, `.buttonStyle(.plain)` strips the system button chrome so our
+/// `interactiveGlass(in:)` is the only surface, drawing the interactive glass — the system
+/// `.buttonStyle(.glass)` renders flat on a `Menu`, which is why this draws the glass itself. The menu
+/// renders in its own `NSMenu`-backed window, which `StatusItemController.shouldKeepPanelOpen` already
+/// keeps the popover open for (same rule that covers the Settings pickers' popups). The ⌘, / ⏎ key
+/// equivalents on the menu items render as shortcut labels and fire while the menu is open; the
+/// always-on `PopoverKeyReader` monitor handles those keys the rest of the time (and from screens with
+/// no footer, like Settings), so no separate SwiftUI shortcut button is needed.
 struct HeaderView: View {
     @Environment(LayoutStore.self) private var layout
     @Environment(UpdaterController.self) private var updater
@@ -22,45 +26,49 @@ struct HeaderView: View {
     var body: some View {
         leadingControl
             .glassButtonGroup(spacing: 4)
-            // Carries the ⌘, Settings shortcut now that there's no dedicated gear button (see below).
-            .background(settingsShortcut)
     }
 
-    /// On the dashboard this is the "More" pull-down. `.menuStyle(.button)` presents it as a button control
-    /// with a disclosure chevron — the standard macOS drop-down button — while `.glassButtonStyle()` keeps it
-    /// on the footer's Liquid Glass (bordered on macOS 15).
+    /// On the dashboard this is the "More" pull-down: an ellipsis on a custom interactive Liquid Glass
+    /// round button. `.buttonStyle(.plain)` strips the system button chrome so `interactiveGlass(in:)`
+    /// is the only surface (the system glass button style renders flat on a `Menu`);
+    /// `.menuIndicator(.hidden)` drops the chevron — the ellipsis already reads as "more". The `Label`
+    /// title carries the accessible name for VoiceOver.
     @ViewBuilder
     private var leadingControl: some View {
         if screen == .dashboard {
             Menu {
                 moreMenuItems
             } label: {
-                // Icon-only "More" affordance; `.menuStyle(.button)` adds the drop-down chevron beside it.
-                // The `Label` title still carries the accessible name for VoiceOver.
                 Label("More", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 28, height: 28)
+                    .interactiveGlass(in: Circle())
+                    .contentShape(Circle())
             }
             .menuStyle(.button)
-            .glassButtonStyle()
-            .buttonBorderShape(.capsule)
-            // The footer's only control: a larger size costs nothing and gives a bigger target.
-            .controlSize(.large)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
         }
     }
 
     /// The "More" menu items, mirroring their in-popover entry points. `autoenablesItems` has no SwiftUI
     /// equivalent, so the Check for Updates item disables itself when Sparkle can't currently check — e.g.
-    /// dev builds with no feed, or while a check is already in flight. Settings (⌘,) and Customize (⏎) are
-    /// reachable by their global shortcuts (the hidden button below and `PopoverKeyReader`), so they don't
-    /// repeat a key equivalent here that would double-register.
+    /// dev builds with no feed, or while a check is already in flight. Settings (⌘,) and Customize (⏎)
+    /// carry their key equivalents so the menu shows the shortcut labels; the always-on `PopoverKeyReader`
+    /// monitor actually handles those keys while the menu is closed (and consumes them, so there's no
+    /// second registration to fight), and the menu item only fires while the menu is open — so the two
+    /// never double-toggle.
     @ViewBuilder
     private var moreMenuItems: some View {
         Button { toggle(.settings) } label: {
             Label("Settings", systemImage: "gearshape")
         }
+        .keyboardShortcut(",", modifiers: .command)
         Button { toggle(.customize) } label: {
             Label("Customize", systemImage: "slider.horizontal.3")
         }
+        .keyboardShortcut(.return, modifiers: [])
         Button { updater.checkForUpdates() } label: {
             Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
         }
@@ -75,17 +83,6 @@ struct HeaderView: View {
             Label("Quit OpenUsage", systemImage: "power")
         }
         .keyboardShortcut("q") // ⌘Q — unowned elsewhere, so safe to register on the item.
-    }
-
-    /// Keeps the system ⌘, Settings shortcut working from anywhere in the popover. The menu's Settings
-    /// item can't carry it (a menu key equivalent only fires while that menu is open), so this hidden,
-    /// zero-size button carries the shortcut the rest of the time. It never draws.
-    private var settingsShortcut: some View {
-        Button("") { toggle(.settings) }
-            .keyboardShortcut(",", modifiers: .command)
-            .frame(width: 0, height: 0)
-            .hidden()
-            .accessibilityHidden(true)
     }
 
     private func toggle(_ screen: PopoverScreen) {

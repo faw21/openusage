@@ -17,7 +17,6 @@ Settings lives inside the popover — there is no separate window. Open it with 
 | Theme | System / Light / Dark | App-wide appearance override for the popover. |
 | Density | Default / Compact | Default breathes; Compact is a real information-dense mode — text steps down one size, rows and provider sections pull together, and Customize / Settings rows tighten with them. In both, consecutive one-line metrics (Today / Yesterday / …) pull together; Compact pulls harder. |
 | Time Format | Auto / 12-hour / 24-hour | How exact times read (e.g. "Resets today at 6:38 PM" vs "18:38"). Auto follows the system. |
-| Reduce Transparency | on/off | On by default. On makes the popover background solid and the cards frosted so they read better over a busy or bright desktop — the glass buttons and controls stay. Turn it off to get the fully translucent Liquid Glass look (cards stay light and glassy). Stays on regardless if you have macOS's own Reduce Transparency (System Settings → Accessibility → Display) enabled. |
 
 ## Usage Display
 

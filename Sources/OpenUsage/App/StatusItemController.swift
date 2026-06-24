@@ -38,13 +38,6 @@ final class StatusItemController: NSObject {
     private var outsideClickMonitors: [Any] = []
     /// Token for the appearance-change observer; held to follow the documented removal pattern.
     private var appearanceObserver: NSObjectProtocol?
-    /// Observers that re-evaluate Reduce Transparency: the in-app toggle and macOS's own setting.
-    private var reduceTransparencyObserver: NSObjectProtocol?
-    private var systemReduceObserver: NSObjectProtocol?
-    /// The two interchangeable backdrops behind the dashboard: Liquid Glass, or a solid surface when
-    /// Reduce Transparency is on. Exactly one is visible (see `applyReduceTransparency`).
-    private var glassBackdrop: NSVisualEffectView?
-    private var solidBackdrop: NSBox?
     /// Panel top-left in screen coords, captured on show. The panel grows downward from here, so the
     /// top edge stays pinned just under the status-item button as the user resizes it.
     private var anchorTopLeft: NSPoint?
@@ -104,21 +97,6 @@ final class StatusItemController: NSObject {
                 self?.panel.appearance = AppearanceSetting.current.nsAppearance
             }
         }
-        reduceTransparencyObserver = NotificationCenter.default.addObserver(
-            forName: ReduceTransparencySetting.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyReduceTransparency() }
-        }
-        systemReduceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyReduceTransparency() }
-        }
-
         // Registered once here; the controller lives for the app's whole life.
         KeyboardShortcuts.onKeyUp(for: .togglePopover) { [weak self] in
             AppLog.info(.statusItem, "Global shortcut fired; toggling popover")
@@ -158,30 +136,20 @@ final class StatusItemController: NSObject {
 
         let container = NSView()
 
-        // Glass backdrop: the popover material sampling the desktop behind the window — the same
-        // Liquid Glass `NSPopover` rendered for free. Rounded via a resizable mask (a plain layer
-        // corner-radius leaves the window-server-composited blur square at the edges).
-        let glass = NSVisualEffectView()
-        glass.material = .popover
-        glass.blendingMode = .behindWindow
-        glass.state = .active
-        glass.maskImage = Self.roundedMaskImage(radius: Self.cornerRadius)
-        glass.autoresizingMask = [.width, .height]
-        glass.frame = container.bounds
-
-        // Solid backdrop for Reduce Transparency: shown instead of the glass. It fills the whole
-        // window, so a screen-switch resize can't briefly reveal glass beneath the content-sized
-        // SwiftUI surface (the bug this fixes). `NSBox.fillColor` tracks light/dark automatically.
-        let solid = NSBox()
-        solid.boxType = .custom
-        solid.titlePosition = .noTitle
-        solid.borderWidth = 0
-        solid.cornerRadius = Self.cornerRadius
-        solid.contentViewMargins = .zero
-        solid.fillColor = .windowBackgroundColor
-        solid.isHidden = true
-        solid.autoresizingMask = [.width, .height]
-        solid.frame = container.bounds
+        // Opaque backdrop: the popover is always a solid panel — Liquid Glass is reserved for the
+        // footer's chrome controls, never the data region behind them. The box fills the whole
+        // window, so a screen-switch resize can't briefly reveal a transparent strip beneath the
+        // content-sized SwiftUI surface. `Theme.trayNSColor` tracks light/dark (and the forced
+        // appearance override) and matches the SwiftUI tray (`DashboardView.PopoverSurface`).
+        let backdrop = NSBox()
+        backdrop.boxType = .custom
+        backdrop.titlePosition = .noTitle
+        backdrop.borderWidth = 0
+        backdrop.cornerRadius = Self.cornerRadius
+        backdrop.contentViewMargins = .zero
+        backdrop.fillColor = Theme.trayNSColor
+        backdrop.autoresizingMask = [.width, .height]
+        backdrop.frame = container.bounds
 
         let host = hostingController.view
         host.frame = container.bounds
@@ -195,11 +163,8 @@ final class StatusItemController: NSObject {
         host.layer?.cornerCurve = .continuous
         host.layer?.masksToBounds = true
 
-        container.addSubview(glass)
-        container.addSubview(solid, positioned: .above, relativeTo: glass)
-        container.addSubview(host, positioned: .above, relativeTo: solid)
-        glassBackdrop = glass
-        solidBackdrop = solid
+        container.addSubview(backdrop)
+        container.addSubview(host, positioned: .above, relativeTo: backdrop)
 
         // A plain container VC owns the backdrop; the hosting controller is its child so SwiftUI gets
         // a proper view-controller hierarchy. The panel itself is sized by `applyPanelSize`.
@@ -207,19 +172,6 @@ final class StatusItemController: NSObject {
         rootVC.view = container
         rootVC.addChild(hostingController)
         panel.contentViewController = rootVC
-
-        applyReduceTransparency()
-    }
-
-    /// Reduce Transparency — the in-app toggle OR macOS's own accessibility setting — swaps the glass
-    /// backdrop for the solid one. The solid view fills the whole window, so it covers any strip the
-    /// content-sized SwiftUI surface hasn't caught up to during a screen-switch resize (which would
-    /// otherwise flash the glass). Both backdrops round identically, so the swap is invisible at rest.
-    private func applyReduceTransparency() {
-        let reduce = ReduceTransparencySetting.current
-            || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        glassBackdrop?.isHidden = reduce
-        solidBackdrop?.isHidden = !reduce
     }
 
     private func configureStatusItem() {
@@ -229,20 +181,6 @@ final class StatusItemController: NSObject {
         // Left-click toggles the popover; right-click (or control-click) drops the context menu.
         // Both arrive through `statusButtonClicked`, which branches on the triggering event.
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-    }
-
-    /// A resizable rounded-rectangle mask so the `behindWindow` glass gets clean rounded corners
-    /// (a plain layer corner-radius leaves the window-server-composited blur square at the edges).
-    private static func roundedMaskImage(radius: CGFloat) -> NSImage {
-        let side = radius * 2 + 1
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-            NSColor.black.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-            return true
-        }
-        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-        image.resizingMode = .stretch
-        return image
     }
 
     // MARK: - Status item image

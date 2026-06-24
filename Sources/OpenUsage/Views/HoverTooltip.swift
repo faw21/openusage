@@ -46,7 +46,6 @@ private extension EnvironmentValues {
 private struct HoverTooltipModifier: ViewModifier {
     let text: String?
     @Environment(\.tooltipDepth) private var depth
-    @Environment(\.reduceTransparencyEffective) private var reduceTransparency
     /// Stable per-target identity, so the presenter can track which targets are currently hovered and
     /// drop this one on exit.
     @State private var id = UUID()
@@ -98,8 +97,7 @@ private struct HoverTooltipModifier: ViewModifier {
     private func syncPresenter() {
         guard isHovering else { return }
         if let resolved {
-            TooltipPresenter.shared.enter(id: id, text: resolved, depth: depth,
-                                          reduceTransparency: reduceTransparency)
+            TooltipPresenter.shared.enter(id: id, text: resolved, depth: depth)
         } else {
             TooltipPresenter.shared.exit(id: id)
         }
@@ -115,7 +113,6 @@ private final class TooltipPresenter {
     private struct Target {
         let text: String
         let depth: Int
-        let reduceTransparency: Bool
     }
 
     /// Targets the cursor is currently inside. More than one only while a hover sits in both a child
@@ -184,8 +181,8 @@ private final class TooltipPresenter {
         panel.contentView = host
     }
 
-    func enter(id: UUID, text: String, depth: Int, reduceTransparency: Bool) {
-        active[id] = Target(text: text, depth: depth, reduceTransparency: reduceTransparency)
+    func enter(id: UUID, text: String, depth: Int) {
+        active[id] = Target(text: text, depth: depth)
         refresh()
     }
 
@@ -278,8 +275,7 @@ private final class TooltipPresenter {
     /// `host.rootView` holding whichever bubble it settled on, which is the one shown.
     private func measuredSize(for target: Target) -> CGSize {
         func fit(maxTextWidth: CGFloat?) -> CGSize {
-            host.rootView = AnyView(TooltipBubble(text: target.text, maxTextWidth: maxTextWidth,
-                                                  reduceTransparency: target.reduceTransparency))
+            host.rootView = AnyView(TooltipBubble(text: target.text, maxTextWidth: maxTextWidth))
             host.layoutSubtreeIfNeeded()
             return host.fittingSize
         }
@@ -323,14 +319,13 @@ private final class NonKeyPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// The bubble drawn inside the panel: a frosted material on glass, a solid fill under Reduce
-/// Transparency, with a hairline border. Sizes to its content (`fittingSize` drives the panel size);
-/// the panel's window shadow supplies the drop shadow.
+/// The bubble drawn inside the panel: a solid fill with a hairline border (the popover is opaque, so
+/// the tooltip matches it rather than sampling glass). Sizes to its content (`fittingSize` drives the
+/// panel size); the panel's window shadow supplies the drop shadow.
 private struct TooltipBubble: View {
     let text: String
     /// When set, the text wraps to this width (long tooltips); `nil` keeps it a snug single line.
     let maxTextWidth: CGFloat?
-    let reduceTransparency: Bool
 
     /// Inner horizontal padding around the text. `TooltipPresenter` subtracts it when deriving the
     /// text wrap width from the bubble's max width.
@@ -341,13 +336,7 @@ private struct TooltipBubble: View {
         label
             .padding(.horizontal, Self.horizontalPadding)
             .padding(.vertical, 5)
-            .background {
-                if reduceTransparency {
-                    shape.fill(Color(nsColor: .windowBackgroundColor))
-                } else {
-                    shape.fill(.regularMaterial)
-                }
-            }
+            .background { shape.fill(Color(nsColor: .windowBackgroundColor)) }
             .overlay { shape.strokeBorder(.separator, lineWidth: 0.5) }
     }
 
