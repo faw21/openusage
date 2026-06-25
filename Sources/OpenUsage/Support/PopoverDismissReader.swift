@@ -189,13 +189,15 @@ enum MenuBarPopover {
     /// path as a status-item click.
     static var dismissHandler: (() -> Void)?
 
-    /// Resize bridge: the in-page resize grip (`ResizeGrip`) drives the host panel's height through
-    /// these, so the AppKit panel owner stays the single place that does `setFrame` (synchronously, so
-    /// the content never lags the frame). `beginResize` snapshots the start height; `resizeBy` is the
-    /// cumulative drag distance (down = taller); `endResize` persists.
-    static var beginResize: (() -> Void)?
-    static var resizeBy: ((CGFloat) -> Void)?
-    static var endResize: (() -> Void)?
+    /// Auto-resize bridge — the "single clock". SwiftUI owns the animated height and the AppKit panel
+    /// is a passive follower: `applyHeight` is called once per animation frame from a SwiftUI
+    /// `Animatable` modifier with the interpolated height, and the controller hops it onto the main
+    /// queue (mandatory — it's invoked from inside SwiftUI's layout pass, and `setFrame` re-enters
+    /// AppKit layout on the constraint-pinned host, which would trip `_NSDetectedLayoutRecursion`) and
+    /// `setFrame`s the panel. `clampHeight` lets SwiftUI clamp its target to the same [min, screen-max]
+    /// range the panel will actually sit at, so the spring settles exactly on-frame.
+    static var applyHeight: ((CGFloat) -> Void)?
+    static var clampHeight: ((CGFloat) -> CGFloat)?
 
     /// Closes the popover. Falls back to ordering the given window out if no owner has installed
     /// a handler (which would be a wiring bug, so it's logged loudly by the caller's absence of

@@ -3,25 +3,38 @@ import AppKit
 
 /// The popover content: the provider/metric list (or the Customize / Settings screen) as a scroll
 /// view between fixed chrome — a top back/title bar on Customize/Settings, and a single bottom footer
-/// (app identity / Customize pin summary + the glass Customize/Settings buttons) with the resize
-/// handle folded into it.
+/// (app identity / Customize pin summary + the glass Customize/Settings buttons).
 ///
 /// The chrome is fixed: it's keyed off `layout.screen` and applied uniformly in `screenView`, so on a
 /// screen switch only the content slides while the footer and top bar stay put. Each screen's scroll
 /// content underlaps the footer with the native soft scroll-edge fade (`softBottomScrollEdge` →
 /// `.scrollEdgeEffectStyle(.soft)`, macOS 26+) — Apple's blurred boundary, not a custom gradient or a
 /// material bar. On macOS 15 the footer/top bar still pin via `safeAreaInset`, just without the blur
-/// (content scrolls flush). The panel is a fixed, user-resizable size (the host window, sized by
-/// `StatusItemController`), so the scroll views inside handle any overflow rather than the popover
-/// growing to fit its content.
+/// (content scrolls flush). The panel **auto-fits its content**: each screen publishes its intrinsic
+/// height (`ScrollContentHeightKey` + the measured footer), and the host window is driven to that on
+/// SwiftUI's animation clock (`drivesPanelHeight` / `PanelHeightModifier`) — so a screen switch morphs
+/// the window height in lockstep with the slide (one spring), and the scroll views only take over once
+/// content exceeds the screen-height cap.
 struct DashboardView: View {
     @Environment(LayoutStore.self) private var layout
     @Environment(WidgetDataStore.self) private var dataStore
     @State private var didInitialRefresh = false
     @State private var reorderLift: ReorderLift?
     @State private var showingResetCustomizationConfirmation = false
-    /// True while the user is dragging the resize grip, so the first drag event begins the resize once.
-    @State private var resizingPanel = false
+    /// The panel height SwiftUI drives — the single animation clock. `PanelHeightModifier` follows it
+    /// frame-by-frame onto the AppKit panel, so the window resize rides the same spring as the screen
+    /// slide (no second AppKit animation to fight). 0 means "not established yet": the panel keeps the
+    /// size the controller opened it at until the first measurement lands, then we snap un-animated.
+    @State private var animatedHeight: CGFloat = 0
+    /// Whether `animatedHeight` has been seeded for this open. Until then the first measurement (or a
+    /// reopen) establishes it without animation; afterwards, changes spring.
+    @State private var didEstablishHeight = false
+    /// Per-screen intrinsic heights, summed into `measuredIdeal`. Written only from geometry/preference
+    /// actions (which run after `body`), so they never trip "Modifying state during view update".
+    @State private var measuredScrollContent: [PopoverScreen: CGFloat] = [:]
+    @State private var measuredFooter: [PopoverScreen: CGFloat] = [:]
+    /// The window height each screen wants — top bar + footer + scroll content. The morph target.
+    @State private var measuredIdeal: [PopoverScreen: CGFloat] = [:]
     /// Horizontal screen-switch slide: 0 shows the outgoing screen, 1 the incoming one. Drives the
     /// page offset so the screens slide between modes on one spring.
     @State private var slideProgress: CGFloat = 1
@@ -49,9 +62,10 @@ struct DashboardView: View {
     var body: some View {
         modeBody
             .frame(width: Self.popoverWidth)
-            // Fill the panel (the host window is the user-set, screen-clamped size); the scroll views
-            // inside handle overflow. The panel no longer sizes to content, so switching screens never
-            // resizes the window — the slide plays over a static frame, with no resize stutter.
+            // Fill the panel. The panel auto-fits its content (the window height is driven to each
+            // screen's measured ideal via `drivesPanelHeight`), so at rest the window is exactly the
+            // content's height and this fill is a no-op; when content exceeds the screen cap the window
+            // clamps and the scroll views inside take the overflow.
             .frame(maxHeight: .infinity, alignment: .top)
             // Paint the opaque tray behind all content (and the footer) so the whole popover reads as
             // one solid panel — the data region never shows the desktop through it. Outermost so the
@@ -59,6 +73,10 @@ struct DashboardView: View {
             // the native soft scroll-edge fade (not a distinct bar). The resize handle is folded into
             // the footer (see `footerBar`), so there's no separate root-level dragger inset anymore.
             .background(PopoverSurface())
+            // Drive the host panel's height on SwiftUI's clock. At the body root, OUTSIDE `modeBody`'s
+            // `.animation(nil, value: layout.screenSlideID)`, so the height rides the active spring (the
+            // slide's, during a switch) instead of being snapped.
+            .drivesPanelHeight(animatedHeight)
             .overlay(alignment: .topLeading) {
                 if let reorderLift {
                     ReorderLiftPreview(lift: reorderLift)
@@ -99,7 +117,17 @@ struct DashboardView: View {
             )
             .background(
                 PopoverVisibilityReader { visible in
-                    if !visible { resetTransientState() }
+                    if visible {
+                        // Reopen: the SwiftUI tree survives a close, so re-seed the height for whatever
+                        // screen we're opening on. Un-animated, and ≈ the controller's opening guess, so
+                        // there's no visible jump. If not yet measured, the measurement onChange seeds it.
+                        if let target = targetHeight() {
+                            didEstablishHeight = true
+                            animatedHeight = target
+                        }
+                    } else {
+                        resetTransientState()
+                    }
                 }
             )
             // A screen switch can tear the list down mid-drag, in which case the gesture's
@@ -118,8 +146,33 @@ struct DashboardView: View {
                 guard id != 0 else { return }
                 slideProgress = 0
                 animatedSlideID = id
+                let destination = layout.screen
                 Task { @MainActor in
-                    withAnimation(Motion.spring) { slideProgress = 1 }
+                    // Co-animate the slide and the height on ONE spring → the coordinated morph: the
+                    // panel grows/shrinks to the destination's size as that screen slides in. The
+                    // destination is mounted (and measured) on the render that set slideProgress=0, so
+                    // its ideal is fresh here; the completion re-syncs in case it wasn't.
+                    didEstablishHeight = true
+                    withAnimation(Motion.spring, completionCriteria: .logicallyComplete) {
+                        slideProgress = 1
+                        animatedHeight = clampedTarget(measuredIdeal[destination] ?? animatedHeight)
+                    } completion: {
+                        if let target = targetHeight(), abs(target - animatedHeight) > 1 {
+                            withAnimation(Motion.spring) { animatedHeight = target }
+                        }
+                    }
+                }
+            }
+            // In-screen growth/shrink (a provider card expands, the footer notice appears, a refresh
+            // loads rows): re-target the height on the same spring. The switch path owns the height
+            // while a slide is in flight, so defer to it then.
+            .onChange(of: measuredIdeal[layout.screen]) { _, _ in
+                guard !isSliding, let target = targetHeight() else { return }
+                if !didEstablishHeight {
+                    didEstablishHeight = true
+                    animatedHeight = target
+                } else if abs(target - animatedHeight) > 1 {
+                    withAnimation(Motion.spring) { animatedHeight = target }
                 }
             }
             .task {
@@ -138,13 +191,11 @@ struct DashboardView: View {
         if layout.screen != .dashboard { layout.screen = .dashboard }
         reorderLift = nil
         layout.cancelDrag()
-        // If the popover closes mid-resize (e.g. the global hotkey fires while dragging), the grip's
-        // `onEnded` never runs — settle it here so the flag can't stay stuck (which would make the next
-        // drag jump from a stale start height), and the dragged height is still persisted.
-        if resizingPanel {
-            resizingPanel = false
-            MenuBarPopover.endResize?()
-        }
+        // Drop the driven height so the next open re-establishes it (un-animated) from the reopened
+        // screen's measurement instead of springing from this session's last value. Until then the
+        // 0 sentinel keeps `PanelHeightModifier` from pushing, so the controller's opening guess stands.
+        animatedHeight = 0
+        didEstablishHeight = false
         dashboardScrollPosition.scrollTo(edge: .top)
     }
 
@@ -214,10 +265,40 @@ struct DashboardView: View {
     @ViewBuilder
     private func screenView(_ screen: PopoverScreen) -> some View {
         scrollBody(for: screen)
+            // Auto-fit: the scroll content publishes its intrinsic height (invariant to the viewport),
+            // which we sum with the chrome into this screen's ideal window height. Keyed by the per-page
+            // `screen`, so during a slide each mounted page measures its own content.
+            .onPreferenceChange(ScrollContentHeightKey.self) { height in
+                measuredScrollContent[screen] = height
+                recomposeIdeal(for: screen)
+            }
             .softTopScrollEdge()
             .softBottomScrollEdge()
             .pinnedTopBar(spacing: 0) { fixedTopBar }
             .pinnedFooter(spacing: 0) { footerBar(for: layout.screen) }
+    }
+
+    // MARK: - Auto-fit height
+
+    /// Sum a screen's measured parts into its ideal window height. Top bar is the fixed `topBarHeight`
+    /// on Customize/Settings and 0 on the dashboard (it pins itself to that exact height); the footer is
+    /// measured because it varies (the Customize pin summary, the denied-pin notice line).
+    private func recomposeIdeal(for screen: PopoverScreen) {
+        guard let content = measuredScrollContent[screen], content > 0 else { return }
+        let topBar: CGFloat = screen == .dashboard ? 0 : Self.topBarHeight
+        let footer = measuredFooter[screen] ?? 0
+        measuredIdeal[screen] = topBar + footer + content
+    }
+
+    /// This screen's ideal height clamped to where the panel can actually sit (the controller owns the
+    /// [min, screen-max] clamp); `nil` until the screen has been measured.
+    private func targetHeight() -> CGFloat? {
+        guard let ideal = measuredIdeal[layout.screen] else { return nil }
+        return clampedTarget(ideal)
+    }
+
+    private func clampedTarget(_ ideal: CGFloat) -> CGFloat {
+        MenuBarPopover.clampHeight?(ideal) ?? ideal
     }
 
     /// The scrolling content for a screen, without chrome — this is the part that slides during a
@@ -250,41 +331,6 @@ struct DashboardView: View {
         case .settings:
             navBar(title: "Settings")
         }
-    }
-
-    /// The resize grabber, folded into the bottom of `footerBar` so it reads as one unit with the
-    /// footer (not a detached strip below it). The drag is measured in `.global` space — pinned to the
-    /// panel's fixed top edge — so the handle moving as the panel grows doesn't feed back into the
-    /// gesture; it drives the host panel through `MenuBarPopover`, which resizes synchronously so the
-    /// content can't lag the frame. The pointer style gives the standard resize cursor.
-    private var resizeDragger: some View {
-        Capsule()
-            .fill(.tertiary)
-            .frame(width: 36, height: 4)
-            .frame(maxWidth: .infinity)
-            // A taller hit area than the 4pt handle, with extra room below so the handle sits up off
-            // the window's rounded bottom edge instead of hugging it. `contentShape` comes after the
-            // padding so the whole padded strip is draggable, not just the visible capsule.
-            .padding(.top, 8)
-            .padding(.bottom, 10)
-            .contentShape(Rectangle())
-            // The grabber sits at the bottom of the footer on every screen, so it reads the same on all
-            // three — the footer (and thus the handle) is the same fixed chrome everywhere now.
-            .pointerStyle(.frameResize(position: .bottom))
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                    .onChanged { value in
-                        if !resizingPanel {
-                            resizingPanel = true
-                            MenuBarPopover.beginResize?()
-                        }
-                        MenuBarPopover.resizeBy?(value.translation.height)
-                    }
-                    .onEnded { _ in
-                        resizingPanel = false
-                        MenuBarPopover.endResize?()
-                    }
-            )
     }
 
     /// The widget list as a scroll view that fills the region the footer leaves. The content scrolls
@@ -403,37 +449,38 @@ struct DashboardView: View {
     /// (`HeaderView` only shows them on the dashboard), leaving just the identity line.
     @ViewBuilder
     private func footerBar(for screen: PopoverScreen) -> some View {
-        VStack(spacing: 0) {
-            Group {
-                if screen == .customize {
-                    // Customize summarizes the layout — active (enabled) metrics and how many are pinned —
-                    // centered, using the same middot the metric rows use.
-                    Text(layout.pinLimitNotice ?? "\(activeMetricCount) active · \(layout.pinnedCount) pinned")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(layout.pinLimitNotice == nil ? AnyShapeStyle(.secondary) : Theme.notice)
-                        .denyShake(trigger: layout.pinNoticeShakeTrigger)
-                        .frame(maxWidth: .infinity)
-                        .animation(Motion.spring, value: layout.pinLimitNotice)
-                } else {
-                    HStack(alignment: .center, spacing: 8) {
-                        footerIdentity
-                        Spacer(minLength: 8)
-                        HeaderView(screen: screen)
-                    }
+        Group {
+            if screen == .customize {
+                // Customize summarizes the layout — active (enabled) metrics and how many are pinned —
+                // centered, using the same middot the metric rows use.
+                Text(layout.pinLimitNotice ?? "\(activeMetricCount) active · \(layout.pinnedCount) pinned")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(layout.pinLimitNotice == nil ? AnyShapeStyle(.secondary) : Theme.notice)
+                    .denyShake(trigger: layout.pinNoticeShakeTrigger)
+                    .frame(maxWidth: .infinity)
+                    .animation(Motion.spring, value: layout.pinLimitNotice)
+            } else {
+                HStack(alignment: .center, spacing: 8) {
+                    footerIdentity
+                    Spacer(minLength: 8)
+                    HeaderView(screen: screen)
                 }
             }
-            .padding(.horizontal, Self.footerHorizontalPadding)
-            .padding(.top, 12)
-            // Tight to the resize handle just below, so the footer row and handle read as one cluster.
-            .padding(.bottom, 4)
-            .frame(maxWidth: .infinity)
-
-            resizeDragger
         }
+        .padding(.horizontal, Self.footerHorizontalPadding)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
         // Content-aware Liquid Glass: `glassEffect` lenses the in-app data scrolling under the footer
         // (not the desktop), so it stays consistent regardless of what's behind the window. Renders on
         // macOS 26+, including the macOS 27 (Golden Gate) beta; macOS 15 falls back to a frosted material.
         .barGlass()
+        // The footer's height feeds the auto-fit sum (`recomposeIdeal`); it varies — the Customize
+        // summary line vs the dashboard identity row vs the denied-pin notice — so measure it rather
+        // than assume a constant. Keyed by the destination `screen` (footer is keyed off `layout.screen`).
+        .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.height } action: { height in
+            measuredFooter[screen] = height
+            recomposeIdeal(for: screen)
+        }
     }
 
     /// Count of enabled ("active") metrics across providers — the "N active" half of the Customize footer

@@ -53,8 +53,16 @@ final class StatusItemController: NSObject {
     private static let minPanelHeight: CGFloat = 480
     /// Opening height before the user has ever resized the panel.
     private static let defaultPanelHeight: CGFloat = 800
-    /// Panel height at the moment a grip drag began; the live height is this plus the drag distance.
-    private var gripStartHeight: CGFloat = 0
+    /// True while a SwiftUI-driven height morph is in flight. Outside-click dismissal is suspended for
+    /// its duration so the panel growing/shrinking under a stationary cursor can't be misread as an
+    /// outside click. Cleared by `scheduleMorphSettle` shortly after the per-frame height stream stops.
+    private var isMorphing = false
+    /// The last height SwiftUI asked for. A re-render that didn't change the height must not churn the
+    /// main queue with a redundant async `setFrame`, so we drop unchanged requests before the hop.
+    private var lastRequestedHeight: CGFloat = 0
+    /// Fires once the per-frame height stream goes quiet: clears `isMorphing` and persists the settled
+    /// per-screen height (the next open's flash-free starting guess).
+    private var morphSettleTask: Task<Void, Never>?
 
     init(container: AppContainer, updater: UpdaterController) {
         self.container = container
@@ -109,11 +117,14 @@ final class StatusItemController: NSObject {
             self?.hidePanel()
         }
 
-        // The in-page resize grip drives the panel height through these (the panel stays the single
-        // owner of `setFrame`, resizing synchronously so the content never lags the frame).
-        MenuBarPopover.beginResize = { [weak self] in self?.beginGripResize() }
-        MenuBarPopover.resizeBy = { [weak self] distance in self?.updateGripResize(by: distance) }
-        MenuBarPopover.endResize = { [weak self] in self?.endGripResize() }
+        // The panel auto-fits its content: SwiftUI owns one animated height (the single animation
+        // clock) and the panel just follows it. `applyHeight` is the per-frame follower; `clampHeight`
+        // shares the panel's [min, screen-max] clamp so SwiftUI's target matches where the frame lands.
+        MenuBarPopover.applyHeight = { [weak self] height in self?.applyMorphHeight(height) }
+        MenuBarPopover.clampHeight = { [weak self] raw in
+            guard let self else { return raw }
+            return min(max(raw, Self.minPanelHeight), self.maxPanelHeight())
+        }
 
         AppLog.info(.statusItem, "Status item ready (button: \(self.statusItem.button != nil), shortcut: \(KeyboardShortcuts.getShortcut(for: .togglePopover)?.description ?? "none"))")
     }
@@ -332,6 +343,10 @@ final class StatusItemController: NSObject {
         statusItem.button?.highlight(false)
         anchorTopLeft = nil
         anchorScreen = nil
+        // Settle any in-flight morph so a reopen doesn't inherit a stale flag or a half-applied height.
+        morphSettleTask?.cancel()
+        isMorphing = false
+        lastRequestedHeight = 0
     }
 
     /// Drops keyboard focus inside the panel so a clicked plain-styled control (a metric row's
@@ -345,44 +360,61 @@ final class StatusItemController: NSObject {
         panel.makeFirstResponder(nil)
     }
 
-    /// Sizes the panel on show: the user's saved height (or a default), **clamped to fit the current
-    /// screen**, with the top-left pinned under the status item. Width is fixed (single-column list).
+    /// Sizes the panel on show to a **flash-free opening guess** — the last settled height for the
+    /// screen being opened (or a default) — clamped to fit the current screen, top-left pinned under
+    /// the status item. Width is fixed (single-column list).
     ///
-    /// This is the whole cross-display story: we store ONE height. If it doesn't fit the screen the
-    /// panel is opening on (e.g. saved big on a Studio Display, opened on a laptop), we shrink it to fit
-    /// *for this open only* — the saved value is untouched, so it returns to full size back on the big
-    /// screen. The clamp runs before the panel is visible, so it's instant. There's no content-driven
-    /// resize, so switching screens never moves the window — only the user's drag does.
+    /// The panel auto-fits its content via the SwiftUI morph (`applyMorphHeight`), but that measured
+    /// height only lands a runloop turn after the content lays out — too late for the first frame. So
+    /// we open at the persisted per-screen guess (kept current by `scheduleMorphSettle`), and SwiftUI
+    /// snaps to the exact measured height on appear; when the guess is close the snap is invisible.
+    /// Per-screen because `openSettings` opens straight onto Settings, which is a different height than
+    /// the dashboard. The clamp keeps a height saved on a big display from running off a short one.
     private func applyPanelSize() {
         guard let anchorTopLeft else { return }
-        let saved = PanelHeightStore.load() ?? Self.defaultPanelHeight
+        let saved = PanelHeightStore.load(for: container.layout.screen) ?? Self.defaultPanelHeight
         let height = min(max(saved, Self.minPanelHeight), maxPanelHeight())
         let origin = NSPoint(x: anchorTopLeft.x, y: anchorTopLeft.y - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: Self.panelWidth, height: height)), display: false)
         panel.invalidateShadow()
     }
 
-    // MARK: - Grip resize
+    // MARK: - Content-driven morph
 
-    private func beginGripResize() {
-        gripStartHeight = panel.frame.height
-    }
-
-    /// Live grip drag. `distance` is how far the pointer has moved down from where the drag began (down =
-    /// grow). We set the frame and then lay the content out **synchronously** before it's drawn, so the
-    /// SwiftUI content never lags the window frame — which was the wobble.
-    private func updateGripResize(by distance: CGFloat) {
-        guard let anchorTopLeft else { return }
-        let height = min(max(gripStartHeight + distance, Self.minPanelHeight), maxPanelHeight())
+    /// Per-frame follower for the SwiftUI-driven height morph (the single animation clock). Called once
+    /// per animation frame with the interpolated height — already hopped onto the main queue and out of
+    /// SwiftUI's layout pass by `PanelHeightBridge`, so this runs synchronously and safely (a synchronous
+    /// `setFrame` from inside that pass would re-enter AppKit layout and trip `_NSDetectedLayoutRecursion`).
+    /// Single clock: only `setFrame(display:false)`, never `animate:true` / `panel.animator()`, so AppKit
+    /// adds no second animation to fight SwiftUI's spring.
+    private func applyMorphHeight(_ rawHeight: CGFloat) {
+        // Drop unchanged requests so a re-render that didn't move the height doesn't re-`setFrame`.
+        guard rawHeight > 1, abs(rawHeight - lastRequestedHeight) > 0.5 else { return }
+        lastRequestedHeight = rawHeight
+        guard let anchorTopLeft else {
+            AppLog.error(.statusItem, "Morph height with no anchor; frame not applied")
+            return
+        }
+        let height = min(max(rawHeight, Self.minPanelHeight), maxPanelHeight())
+        // Break any frame→relayout→frame churn and skip sub-point no-ops.
+        guard abs(panel.frame.height - height) > 1 else { return }
         let origin = NSPoint(x: anchorTopLeft.x, y: anchorTopLeft.y - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: Self.panelWidth, height: height)), display: false)
-        panel.contentView?.layoutSubtreeIfNeeded()
-        panel.displayIfNeeded()
         panel.invalidateShadow()
+        isMorphing = true
+        scheduleMorphSettle()
     }
 
-    private func endGripResize() {
-        PanelHeightStore.save(panel.frame.height)
+    /// Clears `isMorphing` and persists the settled height once the per-frame stream goes quiet (a
+    /// spring keeps changing the height every frame until it settles, so this only fires at rest).
+    private func scheduleMorphSettle() {
+        morphSettleTask?.cancel()
+        morphSettleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, let self, self.panel.isVisible else { return }
+            self.isMorphing = false
+            PanelHeightStore.save(self.panel.frame.height, for: self.container.layout.screen)
+        }
     }
 
     /// The tallest the panel may be on the current screen: the room below its pinned top edge, capped at
@@ -447,6 +479,9 @@ final class StatusItemController: NSObject {
             let screenPoint = NSEvent.mouseLocation
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // While the panel is morphing its height, its frame is moving under a possibly
+                // stationary cursor — don't let a click land "outside" a frame that's mid-resize.
+                guard !self.isMorphing else { return }
                 // Clicking the status item must NOT dismiss here — its own action toggles the panel.
                 // Dismissing on this click's mouse-down would close the panel, then the button action
                 // would reopen it on mouse-up (the close-then-reopen flicker).
@@ -472,6 +507,8 @@ final class StatusItemController: NSObject {
     /// windows). Status-item clicks can arrive with no window (the menu bar is composited by the Window
     /// Server), so the button is also matched by screen position.
     private func shouldKeepPanelOpen(windowID: ObjectIdentifier?, windowTypeName: String?, screenPoint: NSPoint) -> Bool {
+        // The frame is moving mid-morph; a hit-test against it would be racy, so keep the panel open.
+        if isMorphing { return true }
         if isOnStatusButton(screenPoint: screenPoint) { return true }
         if panel.frame.contains(screenPoint) { return true }
         guard let windowID, let windowTypeName else { return false }
@@ -489,17 +526,26 @@ final class StatusItemController: NSObject {
     }
 }
 
-/// Persists the user's chosen panel height across launches. Width is fixed (single-column list), so
-/// only height is stored; it's clamped to the current screen on each open (see `applyPanelSize`).
+/// Persists the last settled panel height **per screen**, so the next open starts at a flash-free
+/// guess close to what the content will measure (the panel auto-fits, but the measurement lands a tick
+/// after the first frame — see `applyPanelSize`). Width is fixed (single-column list), so only height
+/// is stored; it's clamped to the current screen on each open. Per-screen because the dashboard,
+/// Customize, and Settings are genuinely different heights and `openSettings` opens straight onto one.
 private enum PanelHeightStore {
-    private static let key = "openusage.panel.height"
+    private static func key(for screen: PopoverScreen) -> String {
+        switch screen {
+        case .dashboard: "openusage.panel.height.dashboard"
+        case .customize: "openusage.panel.height.customize"
+        case .settings: "openusage.panel.height.settings"
+        }
+    }
 
-    static func load() -> CGFloat? {
-        let value = UserDefaults.standard.double(forKey: key)
+    static func load(for screen: PopoverScreen) -> CGFloat? {
+        let value = UserDefaults.standard.double(forKey: key(for: screen))
         return value > 0 ? CGFloat(value) : nil
     }
 
-    static func save(_ height: CGFloat) {
-        UserDefaults.standard.set(Double(height), forKey: key)
+    static func save(_ height: CGFloat, for screen: PopoverScreen) {
+        UserDefaults.standard.set(Double(height), forKey: key(for: screen))
     }
 }
