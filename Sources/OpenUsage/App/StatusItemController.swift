@@ -335,12 +335,20 @@ final class StatusItemController: NSObject {
         // or reset toggle) stays first responder, so its focus ring would reopen with the popover as a
         // stray blue outline. Drop it on close so every reopen starts unfocused.
         clearStrayFocus()
+        // Persist the closing screen's height NOW, while `container.layout.screen` is still the screen
+        // being shown (the visibility reset that flips it back to dashboard runs later, off the occlusion
+        // notification). `scheduleMorphSettle` only persists after 120ms of quiet and bails once the panel
+        // is hidden, so without this a close right after a resize/screen-switch would never save the new
+        // height and the next open of that screen would use a stale flash-free guess.
+        if panel.isVisible {
+            PanelHeightStore.save(panel.frame.height, for: container.layout.screen)
+        }
         panel.orderOut(nil)
         stopOutsideClickMonitors()
         statusItem.button?.highlight(false)
         anchorTopLeft = nil
         anchorScreen = nil
-        // Settle any in-flight morph so a reopen doesn't inherit a stale flag or a half-applied height.
+        // Settle any in-flight morph so a reopen doesn't inherit a stale flag.
         morphSettleTask?.cancel()
         isMorphing = false
     }
