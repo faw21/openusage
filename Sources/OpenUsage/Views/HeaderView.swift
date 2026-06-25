@@ -20,16 +20,15 @@ import SwiftUI
 /// control simply drops away there.
 ///
 /// Shortcuts survive: ⏎ (Customize), ⌘, (Settings) and Esc are handled by the always-on
-/// `PopoverKeyReader` monitor, so they fire from every screen (including Settings, which has no
-/// footer). The menu items only carry their ⌘ key-equivalents as labels and fire while the menu is
-/// open, so the monitor and the items never double-fire. ⌘Q (Quit) is unowned elsewhere, so it rides
-/// its menu item directly.
+/// `PopoverKeyReader` monitor, so they fire from every screen (including Settings, whose footer shows
+/// only the identity line — no buttons). The menu items only carry their ⌘ key-equivalents as labels
+/// and fire while the menu is open, so the monitor and the items never double-fire. ⌘Q (Quit) is
+/// unowned elsewhere, so it rides its menu item directly.
 struct HeaderView: View {
     @Environment(LayoutStore.self) private var layout
     @Environment(UpdaterController.self) private var updater
-    /// The screen this footer belongs to. Footers are per-page now (they slide with their page), so the
-    /// control keys off the page it's drawn in — not the global current screen, which flips at the start
-    /// of a slide and would otherwise pop the control off the outgoing page mid-transition.
+    /// The current screen. The footer is fixed chrome keyed off `layout.screen` (it no longer slides
+    /// per-page), so this control shows only when that's `.dashboard` and swaps in place on a switch.
     let screen: PopoverScreen
 
     /// Shared height for both halves, so the capsule reads as one control.

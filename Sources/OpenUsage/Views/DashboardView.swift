@@ -2,16 +2,17 @@ import SwiftUI
 import AppKit
 
 /// The popover content: the provider/metric list (or the Customize / Settings screen) as a scroll
-/// view above a single pinned footer — app identity (or the "Customize" mode label) plus the live
-/// refresh countdown on the leading edge, and the glass Customize + Settings buttons on the
-/// trailing edge.
+/// view between fixed chrome — a top back/title bar on Customize/Settings, and a single bottom footer
+/// (app identity / Customize pin summary + the glass Customize/Settings buttons) with the resize
+/// handle folded into it.
 ///
-/// The footer is pinned via `pinnedFooter`, so the scrolling content underlaps it and macOS's native
-/// scroll edge effect (the blur/fade as content passes under a bar) handles the bottom transition —
-/// no custom gradient mask. On macOS 26 that's `safeAreaBar`; on macOS 15 it falls back to
-/// `safeAreaInset`, which still pins the footer but without the scroll-edge blur (content scrolls
-/// flush to it). The popover height is clamped to a share of the hosting screen so it never overflows
-/// when many widgets are added.
+/// The chrome is fixed: it's keyed off `layout.screen` and applied uniformly in `screenView`, so on a
+/// screen switch only the content slides while the footer and top bar stay put. Each screen's scroll
+/// content underlaps the footer with the native soft scroll-edge fade (`softBottomScrollEdge` →
+/// `.scrollEdgeEffectStyle(.soft)`, macOS 26+) — Apple's blurred boundary, not a custom gradient or a
+/// material bar. On macOS 15 the footer/top bar still pin via `safeAreaInset`, just without the blur
+/// (content scrolls flush). The popover height is clamped to a share of the hosting screen so it never
+/// overflows when many widgets are added.
 struct DashboardView: View {
     @Environment(AppContainer.self) private var container
     @Environment(LayoutStore.self) private var layout
@@ -19,7 +20,6 @@ struct DashboardView: View {
     @State private var listContentHeight: CGFloat = 300
     @State private var customizeContentHeight: CGFloat = 220
     @State private var settingsContentHeight: CGFloat = 480
-    @State private var footerHeight: CGFloat = 46
     @State private var usableHeight: CGFloat = ScreenHeightReader.smallestUsableHeight()
     @State private var didInitialRefresh = false
     @State private var hasMeasuredCustomizeContent = false
@@ -52,6 +52,11 @@ struct DashboardView: View {
     /// Fixed height of the Customize / Settings back nav bar. A constant (not measured) so the popover
     /// height math stays deterministic — the bar pins itself to exactly this height.
     private static let topBarHeight: CGFloat = 44
+    /// Combined height of the bottom chrome — the footer row (identity / pin summary + glass buttons)
+    /// plus the resize handle folded directly beneath it into one pinned unit. A constant (not
+    /// measured), like `topBarHeight`, so the popover height math stays deterministic; tuned to the
+    /// rendered footer-row + handle height.
+    private static let footerHeight: CGFloat = 68
 
     /// Never grow taller than 85% of the *hosting* screen's usable height; scroll beyond that. All
     /// three screens (dashboard, Customize, Settings) share this one cap so they feel consistent —
@@ -64,7 +69,7 @@ struct DashboardView: View {
     /// cap minus that fixed chrome. The footer is on every screen; Customize and Settings add the
     /// pinned back nav bar on top, so their chrome is taller by exactly that bar.
     private func chromeHeight(for screen: PopoverScreen) -> CGFloat {
-        footerHeight + (screen == .dashboard ? 0 : Self.topBarHeight)
+        Self.footerHeight + (screen == .dashboard ? 0 : Self.topBarHeight)
     }
 
     private func maxScrollHeight(for screen: PopoverScreen) -> CGFloat {
@@ -165,12 +170,11 @@ struct DashboardView: View {
             // inside handle overflow. The panel no longer sizes to content, so switching screens never
             // resizes the window — the slide plays over a static frame, with no resize stutter.
             .frame(maxHeight: .infinity, alignment: .top)
-            // The resize dragger is a persistent bar at the very bottom — on every screen, including
-            // Settings — separate from the footer above it. It never slides; the pages slide above it.
-            .safeAreaInset(edge: .bottom, spacing: 0) { resizeDragger }
-            // The backdrop is behind-window Liquid Glass (StatusItemController), so the root surface
-            // stays clear: the frosted glass shows through every region the content leaves unpainted —
-            // the footer, the resize grabber, and the gaps between the opaque cards.
+            // Paint the opaque tray behind all content (and the footer) so the whole popover reads as
+            // one solid panel — the data region never shows the desktop through it. Outermost so the
+            // footer, header, and scroll content all sit on it; separation from the footer comes from
+            // the native soft scroll-edge fade (not a distinct bar). The resize handle is folded into
+            // the footer (see `footerBar`), so there's no separate root-level dragger inset anymore.
             .background(PopoverSurface())
             .overlay(alignment: .topLeading) {
                 if let reorderLift {
@@ -270,7 +274,9 @@ struct DashboardView: View {
     /// The popover's screens as a horizontal pager. At rest only the current screen is mounted (one
     /// page at offset 0), so drag-reorder's coordinate math and the footer's scroll-edge underlap are
     /// exactly what they'd be with the screen rendered alone. During a switch the outgoing and incoming
-    /// screens are both mounted, ordered left-to-right by `slideRank`, and slid by a pure offset.
+    /// screens are both mounted, ordered left-to-right by `slideRank`, and slid by a pure offset — while
+    /// the chrome (top bar + footer), keyed off `layout.screen` in `screenView`, is identical on both
+    /// pages, so it stays visually fixed while only the content slides beneath it.
     ///
     /// Why an offset and not a SwiftUI `.transition`: the cards' fill is translucent `.quaternary`
     /// glass. Any transition carrying `.opacity` composites a screen into a transparency layer where
@@ -321,13 +327,29 @@ struct DashboardView: View {
         return fromOffset + progress * (toOffset - fromOffset)
     }
 
-    /// Builds one screen. Kept identity-stable across the slide via the `ForEach` key in `modeBody`.
+    /// Builds one screen: its scroll body wrapped in the fixed chrome. The chrome (top bar + footer
+    /// with the folded-in resize handle) is keyed off `layout.screen` — the *destination* — not the
+    /// per-page `screen`, so during a switch both mounted pages render identical chrome pinned to the
+    /// same edges. The chrome therefore stays put while only the content offsets beneath it (the
+    /// "one fixed footer / top bar doesn't slide" behaviour). The soft scroll-edge styles and the
+    /// pinned bars attach to each page's scroll view (`MeasuredScrollScreen`), the documented place for
+    /// them. Identity stays stable across the slide via the `ForEach` key in `modeBody`.
     @ViewBuilder
     private func screenView(_ screen: PopoverScreen) -> some View {
+        scrollBody(for: screen)
+            .softTopScrollEdge()
+            .softBottomScrollEdge()
+            .pinnedTopBar(spacing: 0) { fixedTopBar }
+            .pinnedFooter(spacing: 0) { footerBar(for: layout.screen) }
+    }
+
+    /// The scrolling content for a screen, without chrome — this is the part that slides during a
+    /// switch (its `screen` is the per-page one, so each mounted page shows its own content).
+    @ViewBuilder
+    private func scrollBody(for screen: PopoverScreen) -> some View {
         switch screen {
         case .dashboard:
             scrollingDashboard
-                .pinnedFooter(spacing: 0) { footerBar(for: .dashboard) }
         case .customize:
             CustomizeView(
                 contentHeight: $customizeContentHeight,
@@ -335,24 +357,34 @@ struct DashboardView: View {
                 reorderSpaceName: Self.reorderSpace,
                 reorderLift: $reorderLift
             )
-            .pinnedTopBar(spacing: 0) { navBar(title: "Customize", showsReset: true) }
-            .pinnedFooter(spacing: 0) { footerBar(for: .customize) }
         case .settings:
-            // No footer — Settings shows only its content (with the top nav bar) above the persistent
-            // dragger. The dragger lives at the root, so it's still there.
             SettingsScreen(
                 contentHeight: $settingsContentHeight,
                 hasMeasuredContent: $hasMeasuredSettingsContent
             )
-            .pinnedTopBar(spacing: 0) { navBar(title: "Settings") }
         }
     }
 
-    /// The resize dragger: a persistent grabber at the very bottom of the popover, present on every
-    /// screen and separate from the footer above it (it never slides). The drag is measured in `.global`
-    /// space — pinned to the panel's fixed top edge — so the bar moving as the panel grows doesn't feed
-    /// back into the gesture; it drives the host panel through `MenuBarPopover`, which resizes
-    /// synchronously so the content can't lag the frame. The pointer style gives the standard resize cursor.
+    /// The fixed top back/title bar, keyed off `layout.screen` so it's identical on both slide pages
+    /// (no horizontal travel): the back nav bar on Customize/Settings, nothing on the dashboard. Its
+    /// `topBarHeight` is reserved per screen in `chromeHeight(for:)`; the dashboard reserves none.
+    @ViewBuilder
+    private var fixedTopBar: some View {
+        switch layout.screen {
+        case .dashboard:
+            EmptyView()
+        case .customize:
+            navBar(title: "Customize", showsReset: true)
+        case .settings:
+            navBar(title: "Settings")
+        }
+    }
+
+    /// The resize grabber, folded into the bottom of `footerBar` so it reads as one unit with the
+    /// footer (not a detached strip below it). The drag is measured in `.global` space — pinned to the
+    /// panel's fixed top edge — so the handle moving as the panel grows doesn't feed back into the
+    /// gesture; it drives the host panel through `MenuBarPopover`, which resizes synchronously so the
+    /// content can't lag the frame. The pointer style gives the standard resize cursor.
     private var resizeDragger: some View {
         Capsule()
             .fill(.tertiary)
@@ -364,10 +396,8 @@ struct DashboardView: View {
             .padding(.top, 8)
             .padding(.bottom, 10)
             .contentShape(Rectangle())
-            // The grabber sits on the shared frosted-glass backdrop on every screen, so it reads the
-            // same on all three — no screen-specific backing. It used to get a `.bar` fill on Settings
-            // (which has no footer above it) to stand out, but that rendered as a lighter strip than the
-            // rest of the panel, and only on Settings.
+            // The grabber sits at the bottom of the footer on every screen, so it reads the same on all
+            // three — the footer (and thus the handle) is the same fixed chrome everywhere now.
             .pointerStyle(.frameResize(position: .bottom))
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .global)
@@ -386,10 +416,9 @@ struct DashboardView: View {
     }
 
     /// The widget list as a scroll view that fills the region the footer leaves. The content scrolls
-    /// under the footer; the native scroll edge effect handles the visual transition. Unlike the
-    /// Customize/Settings screens it tracks the dashboard's own scroll position and adds the top
-    /// soft edge effect (`softTopScrollEdge`, a no-op on macOS 15 where content scrolls flush to the
-    /// top), so those modifiers wrap the shared measuring container here.
+    /// under the footer with the native soft scroll-edge fade (`softTopScrollEdge`/`softBottomScrollEdge`
+    /// are applied uniformly in `screenView`). Unlike Customize/Settings it tracks the dashboard's own
+    /// scroll position, so that modifier stays here on the scroll view.
     private var scrollingDashboard: some View {
         MeasuredScrollScreen(onMeasure: { newValue in
             if newValue > 0 { listContentHeight = newValue }
@@ -401,7 +430,6 @@ struct DashboardView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollPosition($dashboardScrollPosition)
-        .softTopScrollEdge()
     }
 
     @ViewBuilder
@@ -425,14 +453,12 @@ struct DashboardView: View {
     // MARK: - Pinned top nav bar
 
     /// The back nav bar pinned above Customize and Settings — the macOS-native place for a back
-    /// affordance (top-leading), replacing the old trailing footer "Done" button. It pins *inside each
-    /// screen's page* (via `pinnedTopBar` in `screenView`) rather than over the whole popover, so it
-    /// slides in and out with its own page during a screen switch and always carries that page's own
-    /// title. Keying it off the shared `layout.screen` instead desynced it from the height: the screen
-    /// flips instantly at slide start while `animatedPopoverHeight` still uses the outgoing screen's
-    /// chrome, so the bar could appear before its 44pt was reserved (or linger after), and
-    /// Settings↔Customize flashed the wrong title mid-slide. Its fixed height is still reserved
-    /// per-screen in `chromeHeight(for:)`. Content scrolls under it with the native scroll-edge blur.
+    /// affordance (top-leading), replacing the old trailing footer "Done" button. It's fixed chrome:
+    /// applied uniformly in `screenView` via `pinnedTopBar` and keyed off `layout.screen` (see
+    /// `fixedTopBar`), so it doesn't slide with the pages — it appears in place when entering
+    /// Customize/Settings and clears on the dashboard, while the content slides beneath it. Its
+    /// `barGlass()` (Liquid Glass) background lenses the content scrolling under it — the same
+    /// content-aware glass as the footer.
     private func navBar(title: String, showsReset: Bool = false) -> some View {
         HStack(spacing: 10) {
             backButton
@@ -446,6 +472,8 @@ struct DashboardView: View {
         .padding(.horizontal, Self.footerHorizontalPadding)
         .frame(height: Self.topBarHeight)
         .frame(maxWidth: .infinity)
+        // Same content-aware Liquid Glass as the footer (`barGlass`) — the matching top/bottom chrome.
+        .barGlass()
         .confirmationDialog(
             "Reset Customization?",
             isPresented: $showingResetCustomizationConfirmation,
@@ -492,36 +520,50 @@ struct DashboardView: View {
 
     // MARK: - Pinned footer
 
-    /// The single bottom footer: app identity (or the "Customize" mode label while editing) plus the
-    /// live refresh countdown on the leading edge, and the glass Customize + Settings buttons on the
-    /// trailing edge. Pinned via `pinnedFooter` so the content scrolls under it with the native scroll
-    /// edge effect (`safeAreaBar` on macOS 26; `safeAreaInset` on macOS 15, where the footer still
-    /// pins but the scroll-edge blur is absent).
+    /// The bottom chrome as one unit: the footer row — app identity + live refresh countdown (or the
+    /// Customize pin summary) plus the glass Customize/Settings buttons — with the resize handle folded
+    /// directly beneath it. Pinned via `pinnedFooter` (`safeAreaBar` on macOS 26; `safeAreaInset` on
+    /// macOS 15).
+    ///
+    /// Its background is `barGlass()` — content-aware Liquid Glass (`glassEffect`) that lenses the
+    /// in-app data scrolling beneath it, so the footer reads as real glass over the content (and stays
+    /// consistent regardless of what's behind the window; the body stays opaque). A custom `safeAreaBar`
+    /// gets no automatic system glass on macOS 27, so this explicit background is REQUIRED — without it
+    /// the footer is transparent and content bleeds through. On Settings the trailing buttons are empty
+    /// (`HeaderView` only shows them on the dashboard), leaving just the identity line.
     @ViewBuilder
     private func footerBar(for screen: PopoverScreen) -> some View {
-        Group {
-            if screen == .customize {
-                // Customize summarizes the layout — active (enabled) metrics and how many are pinned —
-                // centered, using the same middot the metric rows use.
-                Text(layout.pinLimitNotice ?? "\(activeMetricCount) active · \(layout.pinnedCount) pinned")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(layout.pinLimitNotice == nil ? AnyShapeStyle(.secondary) : Theme.notice)
-                    .denyShake(trigger: layout.pinNoticeShakeTrigger)
-                    .frame(maxWidth: .infinity)
-                    .animation(Motion.spring, value: layout.pinLimitNotice)
-            } else {
-                HStack(alignment: .center, spacing: 8) {
-                    footerIdentity
-                    Spacer(minLength: 8)
-                    HeaderView(screen: screen)
+        VStack(spacing: 0) {
+            Group {
+                if screen == .customize {
+                    // Customize summarizes the layout — active (enabled) metrics and how many are pinned —
+                    // centered, using the same middot the metric rows use.
+                    Text(layout.pinLimitNotice ?? "\(activeMetricCount) active · \(layout.pinnedCount) pinned")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(layout.pinLimitNotice == nil ? AnyShapeStyle(.secondary) : Theme.notice)
+                        .denyShake(trigger: layout.pinNoticeShakeTrigger)
+                        .frame(maxWidth: .infinity)
+                        .animation(Motion.spring, value: layout.pinLimitNotice)
+                } else {
+                    HStack(alignment: .center, spacing: 8) {
+                        footerIdentity
+                        Spacer(minLength: 8)
+                        HeaderView(screen: screen)
+                    }
                 }
             }
+            .padding(.horizontal, Self.footerHorizontalPadding)
+            .padding(.top, 12)
+            // Tight to the resize handle just below, so the footer row and handle read as one cluster.
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity)
+
+            resizeDragger
         }
-        .padding(.horizontal, Self.footerHorizontalPadding)
-        .padding(.top, 12)
-        // Tight to the resize dragger just below, so the footer and handle read as one bottom cluster.
-        .padding(.bottom, 4)
-        .frame(maxWidth: .infinity)
+        // Content-aware Liquid Glass: `glassEffect` lenses the in-app data scrolling under the footer
+        // (not the desktop), so it stays consistent regardless of what's behind the window. Renders on
+        // macOS 26+, including the macOS 27 (Golden Gate) beta; macOS 15 falls back to a frosted material.
+        .barGlass()
     }
 
     /// Count of enabled ("active") metrics across providers — the "N active" half of the Customize footer
@@ -609,13 +651,14 @@ struct DashboardView: View {
     }
 }
 
-/// The popover's root surface: intentionally clear. The translucent backdrop is the behind-window
-/// `NSVisualEffectView` in `StatusItemController`, so keeping SwiftUI clear here lets that frosted
-/// glass show through every unpainted region (the footer, the resize grabber, and the gaps between
-/// the opaque cards). Never hit-tests, so it can't steal clicks from the content above it.
+/// The popover's opaque backdrop tray, painted behind all content so the popover reads as one solid
+/// panel — the data region never shows the desktop through it. Matches the AppKit panel backdrop
+/// (`StatusItemController`'s `NSBox`) — both `Theme.traySurface`. The footer draws its own frosted
+/// glass bar on top of this (in-window), so glass stays chrome over solid content. Never hit-tests,
+/// so it can't steal clicks from the content above it.
 private struct PopoverSurface: View {
     var body: some View {
-        Color.clear
+        Theme.traySurface
             .allowsHitTesting(false)
     }
 }

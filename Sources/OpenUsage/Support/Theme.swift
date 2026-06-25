@@ -3,9 +3,9 @@ import AppKit
 
 /// Central palette + surface styles. Surfaces stay adaptive (light/dark).
 ///
-/// The popover is always a solid, opaque panel — Liquid Glass is reserved for the footer's chrome
-/// controls, never the data region behind them (Apple's guidance: glass for navigation/controls,
-/// content on an opaque surface). So the data surfaces here are plain opaque fills: a light-gray
+/// The popover is always a solid, opaque panel — glass is reserved for the footer chrome (its frosted
+/// bar and the controls on it), never the data region behind it (Apple's guidance: glass for
+/// navigation/controls, content on an opaque surface). So the data surfaces here are plain opaque fills: a light-gray
 /// window "tray" with white grouped cards in light mode, a near-black tray with a step-lighter card
 /// in dark mode — the System Settings grouped-box look.
 enum Theme {
@@ -33,11 +33,25 @@ enum Theme {
 
     // MARK: - Surfaces
 
+    /// The popover's opaque backdrop ("tray") behind the grouped cards. Deliberately a touch grayer
+    /// than pure white in light mode so the white cards read as raised boxes on it — the System
+    /// Settings look (`windowBackgroundColor` is too near-white for white cards to separate). A
+    /// near-black in dark mode. Exposed as an `NSColor` so the panel's AppKit backdrop
+    /// (`StatusItemController`) and the SwiftUI surface (`DashboardView.PopoverSurface`) are one color.
+    /// The footer's frosted glass bar samples this opaque tray (in-window), so it reads as glass
+    /// chrome over solid content, never a hole to the desktop.
+    static let trayNSColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(white: 0.12, alpha: 1)
+            : NSColor(white: 0.93, alpha: 1)
+    }
+    static let traySurface = Color(nsColor: trayNSColor)
+
     /// The opaque grouped-card color, shared by the live card fill and the lifted drag preview so a
-    /// dragged card is the exact same color as the cards it floats over. White in light mode, a step
-    /// lighter than the frosted-glass backdrop in dark mode (no stock semantic color lifts above the
-    /// window background in dark, so the dark value is set explicitly); the hairline `cardBorder`
-    /// crisps the edge in both modes against the translucent popover surface.
+    /// dragged card is the exact same color as the cards it floats over. White over the gray tray in
+    /// light mode, a step lighter than the near-black tray in dark mode (no stock semantic color lifts
+    /// above the window background in dark, so the dark value is set explicitly); the hairline
+    /// `cardBorder` crisps the edge in both modes.
     static let cardNSColor = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? NSColor(white: 0.19, alpha: 1)
