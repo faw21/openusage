@@ -44,6 +44,23 @@ final class PanelHeightBridgeTests: XCTestCase {
         await fulfillment(of: [droppedApply], timeout: 0.05)
     }
 
+    func testEffectValuePushesEstablishedHeight() async {
+        resetBridge()
+        defer { resetBridge() }
+
+        var applied: [CGFloat] = []
+        let firstApply = expectation(description: "applies established height")
+        MenuBarPopover.applyHeight = { height in
+            applied.append(height)
+            firstApply.fulfill()
+        }
+
+        _ = PanelHeightModifier(height: 640).effectValue(size: CGSize(width: 320, height: 640))
+
+        await fulfillment(of: [firstApply], timeout: 1)
+        XCTAssertEqual(applied, [640])
+    }
+
     private func resetBridge() {
         PanelHeightBridge.invalidate()
         MenuBarPopover.applyHeight = nil
