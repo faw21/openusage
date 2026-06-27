@@ -2,6 +2,7 @@ import AppKit
 import KeyboardShortcuts
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 
 /// The in-popover Settings screen — the popover's third mode alongside the dashboard and
 /// Customize. It replaces the old separate Settings window, which forced the popover closed every
@@ -25,6 +26,10 @@ struct SettingsScreen: View {
     @AppStorage(LogLevelSetting.key) private var logLevel = LogLevelSetting.fallback
     /// Surfaced under the Advanced rows when copying the path or revealing the file fails.
     @State private var logActionError: String?
+    /// True when notifications are enabled but macOS has denied authorization, so the Notifications
+    /// section shows an inline notice pointing the user to System Settings. Refreshed on appear and
+    /// whenever the master toggle flips on.
+    @State private var notificationsDenied = false
 
     /// Fills the region the dashboard's pinned footer leaves. Same scroller treatment as Customize:
     /// the overlay scroller stays (the scroll edge effect needs it) but is invisible.
@@ -38,6 +43,7 @@ struct SettingsScreen: View {
         @Bindable var store = container.dataStore
         @Bindable var layout = container.layout
         @Bindable var updater = updater
+        @Bindable var notifications = container.notificationSettings
         // Same section rhythm as the dashboard and Customize (all read the density setting).
         return VStack(alignment: .leading, spacing: density.sectionSpacing) {
             section("General") {
@@ -107,6 +113,7 @@ struct SettingsScreen: View {
                         .hoverTooltip("Show how you're pacing on every metric, not just ones near their limit")
                 }
             }
+            notificationsSection
             section("Providers") {
                 ForEach(container.registry.providers) { provider in
                     providerRow(provider)
@@ -159,6 +166,63 @@ struct SettingsScreen: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+        .task { await refreshNotificationsDenied() }
+    }
+
+    // MARK: - Notifications
+
+    /// Quota pace notifications: a master switch, the three per-trigger rows (shown only when the master
+    /// is on), and an inline notice when macOS has denied permission. Defaults are all-on (owner
+    /// decision); the app requests authorization at first launch.
+    private var notificationsSection: some View {
+        @Bindable var notifications = container.notificationSettings
+        return section("Notifications") {
+            row("Quota Notifications") {
+                Toggle("", isOn: $notifications.enabled)
+                    .settingsSwitchStyle()
+                    .onChange(of: notifications.enabled) { _, enabled in
+                        if enabled {
+                            // Turning it back on may need a fresh prompt (or surface a prior denial).
+                            AppNotifications.shared.requestAuthorizationOnStartup()
+                            Task { await refreshNotificationsDenied() }
+                        }
+                    }
+            }
+            if notifications.enabled {
+                if notificationsDenied {
+                    // Same orange inline-notice idiom as the Launch-at-Login error line.
+                    Text("Notifications Are Turned Off for OpenUsage. Enable Them in System Settings → Notifications.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.notice)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                row("Low Remaining") {
+                    Toggle("", isOn: $notifications.underTenPercent)
+                        .settingsSwitchStyle()
+                }
+                row("Pace Warning") {
+                    Toggle("", isOn: $notifications.healthyToClose)
+                        .settingsSwitchStyle()
+                }
+                row("Pace Critical") {
+                    Toggle("", isOn: $notifications.closeToRunningOut)
+                        .settingsSwitchStyle()
+                }
+            }
+        }
+    }
+
+    /// Refresh `notificationsDenied` from the live authorization status — but only flag it when the user
+    /// actually wants notifications, so a denied notice never shows while the master switch is off.
+    private func refreshNotificationsDenied() async {
+        guard container.notificationSettings.enabled else {
+            notificationsDenied = false
+            return
+        }
+        let status = await AppNotifications.shared.authorizationStatus()
+        notificationsDenied = status == .denied
     }
 
     // MARK: - Advanced (logging)

@@ -1,0 +1,183 @@
+import Foundation
+
+/// One of the three quota milestones a user can be alerted about. Each maps to a single per-trigger
+/// toggle in Settings and is deduped independently within a reset window.
+enum PaceMilestone: String, CaseIterable, Hashable, Sendable {
+    /// First time the remaining share of the quota drops under 10% for the period.
+    case underTenPercent
+    /// Pace verdict worsened from healthy (blue) to close-to-limit (yellow).
+    case healthyToClose
+    /// Pace verdict worsened from close-to-limit (yellow) to running-out (red).
+    case closeToRunningOut
+}
+
+/// The pace-severity bucket a metric is in, derived from its `MeterState`. Only the three live-pace
+/// verdicts (and the terminal `spent`) carry a comparable severity; states with no trustworthy pace
+/// (`noData`, absolute-band `level`, and a fresh session window) are `untracked` — they neither fire a
+/// milestone nor count as an improvement, so they can't reset a fired flag either.
+enum PaceBucket: Hashable, Sendable {
+    /// No pace story to act on (no data, plain level band, or a not-yet-started session window).
+    case untracked
+    /// Blue: on course to finish with ≥10% to spare.
+    case healthy
+    /// Yellow: projected inside the last 10%, cutting it close.
+    case close
+    /// Red: projected to run out before the reset, or already spent to nothing.
+    case runningOut
+}
+
+/// Deduplication state for one metric (provider + descriptor), persisted across refresh passes so a
+/// milestone fires once per reset window rather than on every tick. Lives in `WidgetDataStore`.
+struct NotificationState: Equatable, Sendable {
+    /// The reset instant of the window the fired flags belong to. When this advances (a new window),
+    /// the fired set clears so the same milestones can fire again next period.
+    var resetsAt: Date?
+    /// Milestones already alerted in the current window.
+    var firedMilestones: Set<PaceMilestone> = []
+    /// The bucket observed on the previous evaluation, so a worsening transition can be detected.
+    var previousBucket: PaceBucket = .untracked
+    /// Whether the metric was under 10% remaining on the previous evaluation, so the crossing into
+    /// under-10% is an edge (and a recovery above 10% re-arms it).
+    var wasUnderTenPercent: Bool = false
+}
+
+/// Which per-milestone toggles are currently on. The master toggle is applied by the caller before
+/// this runs; this struct only carries the three individual switches.
+struct PaceNotificationToggles: Sendable {
+    var underTenPercent: Bool
+    var healthyToClose: Bool
+    var closeToRunningOut: Bool
+
+    static let allOn = PaceNotificationToggles(underTenPercent: true, healthyToClose: true, closeToRunningOut: true)
+
+    func isOn(_ milestone: PaceMilestone) -> Bool {
+        switch milestone {
+        case .underTenPercent: return underTenPercent
+        case .healthyToClose: return healthyToClose
+        case .closeToRunningOut: return closeToRunningOut
+        }
+    }
+}
+
+/// Pure milestone logic — no SwiftUI, no UserNotifications — so the firing rules stay unit-testable.
+/// `WidgetDataStore.evaluateNotifications` feeds it the current `MeterState` + `fraction` + `resetsAt`
+/// for each metric and posts a notification for every returned milestone.
+enum PaceNotificationLogic {
+    /// Result of one evaluation: the milestones to fire now, and the state to persist for next time.
+    struct Transition: Equatable {
+        var fire: [PaceMilestone]
+        var newState: NotificationState
+    }
+
+    /// Maps a meter state to its pace bucket. The "no trustworthy pace" states (no data, fresh
+    /// session, absolute level bands) are `untracked` — they never fire and never reset flags.
+    static func bucket(for state: WidgetData.MeterState) -> PaceBucket {
+        switch state {
+        case .noData, .level: return .untracked
+        case .healthy: return .healthy
+        case .closeToLimit: return .close
+        case .runningOut, .spent: return .runningOut
+        }
+    }
+
+    /// Decide which milestones to fire for one metric this pass, and the state to persist.
+    ///
+    /// Rules:
+    /// - A new reset window (a later `resetsAt`) clears the fired set so milestones can fire again.
+    /// - `healthyToClose` / `closeToRunningOut` fire only on a worsening *edge* between adjacent
+    ///   buckets, only if not already fired this window, and only if their toggle is on.
+    /// - `underTenPercent` fires the first time remaining crosses under 10% this window; recovering
+    ///   above 10% re-arms it so a later dip re-fires.
+    /// - `untracked` states (no data, fresh session, level bands) suppress everything — they carry no
+    ///   trustworthy pace — and don't disturb the recorded "previous" signals, so a momentary gap
+    ///   (e.g. a failed refresh) doesn't spuriously re-fire when real data returns.
+    /// - Improving pace clears the relevant fired flags so a later worsening re-fires.
+    static func transitions(
+        state: WidgetData.MeterState,
+        fraction: Double,
+        resetsAt: Date?,
+        previous: NotificationState,
+        toggles: PaceNotificationToggles
+    ) -> Transition {
+        var next = previous
+
+        // New window: reset dedup. A nil-or-equal reset keeps the window; a strictly later reset (or a
+        // reset appearing where there was none) starts fresh.
+        if let resetsAt, previous.resetsAt == nil || resetsAt > (previous.resetsAt ?? .distantPast) {
+            next.firedMilestones = []
+            next.wasUnderTenPercent = false
+            next.previousBucket = .untracked
+        }
+        next.resetsAt = resetsAt ?? previous.resetsAt
+
+        let currentBucket = bucket(for: state)
+
+        // Untracked: no trustworthy pace. Don't fire, and don't overwrite the previous signals — a
+        // transient no-data tick shouldn't look like an "improvement" that re-arms milestones, nor a
+        // worsening that fires them. Leave state as-is (window reset above still applies).
+        guard currentBucket != .untracked else {
+            return Transition(fire: [], newState: next)
+        }
+
+        var fire: [PaceMilestone] = []
+
+        // Pace-verdict edges. Severity order: untracked(-1) < healthy(0) < close(1) < runningOut(2).
+        // A milestone fires when the metric reaches (or passes) its threshold bucket having been below
+        // it before. Comparing severities — rather than naming exact buckets — makes two cases fall out:
+        //   • a jump straight from blue to red still crosses the yellow boundary, so it fires both;
+        //   • a *cold start* already in a bad bucket (previous == untracked, severity -1) fires too, so
+        //     a user who launches the app already over-pace is alerted on the first evaluation.
+        let previousSeverity = severity(next.previousBucket)
+        let currentSeverity = severity(currentBucket)
+        // "Pace Warning" is the yellow state itself: fire only when the metric is *currently* yellow and
+        // was below it before. If pace has already blown through to red, the user gets the single, more
+        // urgent "Pace Critical" instead — never both at once.
+        if currentBucket == .close, previousSeverity < severity(.close) {
+            maybeFire(.healthyToClose, into: &fire, state: &next, toggles: toggles)
+        }
+        if currentSeverity >= severity(.runningOut), previousSeverity < severity(.runningOut) {
+            maybeFire(.closeToRunningOut, into: &fire, state: &next, toggles: toggles)
+        }
+        // Improving pace clears the now-irrelevant fired flags so a later worsening re-fires them.
+        if currentSeverity < previousSeverity {
+            if currentSeverity <= severity(.healthy) { next.firedMilestones.remove(.healthyToClose) }
+            if currentSeverity <= severity(.close) { next.firedMilestones.remove(.closeToRunningOut) }
+        }
+        next.previousBucket = currentBucket
+
+        // Under-10%-remaining edge, tracked independently of the pace verdict.
+        let underNow = fraction < 0.10
+        if underNow, !next.wasUnderTenPercent {
+            maybeFire(.underTenPercent, into: &fire, state: &next, toggles: toggles)
+        }
+        if !underNow {
+            // Recovered above 10% — re-arm so a later dip fires again.
+            next.firedMilestones.remove(.underTenPercent)
+        }
+        next.wasUnderTenPercent = underNow
+
+        return Transition(fire: fire, newState: next)
+    }
+
+    /// Fires a milestone if its toggle is on and it hasn't already fired this window, recording it.
+    private static func maybeFire(
+        _ milestone: PaceMilestone,
+        into fire: inout [PaceMilestone],
+        state: inout NotificationState,
+        toggles: PaceNotificationToggles
+    ) {
+        guard toggles.isOn(milestone), !state.firedMilestones.contains(milestone) else { return }
+        fire.append(milestone)
+        state.firedMilestones.insert(milestone)
+    }
+
+    /// Ordinal pace severity so transitions can be compared (`untracked` sorts below `healthy`).
+    private static func severity(_ bucket: PaceBucket) -> Int {
+        switch bucket {
+        case .untracked: return -1
+        case .healthy: return 0
+        case .close: return 1
+        case .runningOut: return 2
+        }
+    }
+}
