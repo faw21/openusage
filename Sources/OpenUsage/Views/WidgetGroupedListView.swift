@@ -297,7 +297,11 @@ struct WidgetGroupedListView: View {
             return []
         }
         let alwaysShown = group.alwaysShownWidgets.compactMap { layout.descriptor(for: $0)?.id }
-        guard group.hasExpandedMetrics, layout.isProviderExpanded(providerID) else { return alwaysShown }
+        // The caret is a drop target whenever the expanded section is open — including a links-only
+        // section (buttons but no expanded metrics), so a metric can be dragged past the caret to tuck
+        // it below the fold even when only buttons are showing there.
+        let hasExpandedContent = group.hasExpandedMetrics || !group.provider.visibleLinks.isEmpty
+        guard hasExpandedContent, layout.isProviderExpanded(providerID) else { return alwaysShown }
         let expanded = group.expandedWidgets.compactMap { layout.descriptor(for: $0)?.id }
         return alwaysShown + [expandedDividerID(for: providerID)] + expanded
     }
