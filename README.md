@@ -8,6 +8,22 @@ OpenUsage shows how much of your AI coding plans you've used: session and weekly
   <img src="assets/screenshot.jpg" alt="OpenUsage menu bar tracker showing Claude and Codex session, weekly, and spend usage" width="900">
 </p>
 
+## Install
+
+Install via [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask openusage
+```
+
+Prefer the tap (also carries Early Access betas):
+
+```sh
+brew install --cask robinebers/tap/openusage
+```
+
+Or grab the signed, notarized DMG from the [latest release](https://github.com/robinebers/openusage/releases/latest).
+
 ## Supported Providers
 
 - [**Antigravity**](docs/providers/antigravity.md) — Gemini Pro/Flash and Claude model quotas

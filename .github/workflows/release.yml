@@ -146,6 +146,83 @@ jobs:
           prerelease: ${{ steps.meta.outputs.prerelease }}
           files: dist/OpenUsage-${{ steps.meta.outputs.version }}.dmg
 
+      # --- Homebrew distribution (issue #56) -----------------------------------------------------
+      # Both steps below are STABLE-only (Homebrew/homebrew-cask does not accept pre-releases, and the
+      # default `brew install --cask openusage` should always point at a stable build). The source of
+      # truth for the cask body is packaging/homebrew/Casks/openusage.rb; these steps only carry the new
+      # version + DMG sha256 forward. Betas are intentionally NOT published to either channel.
+      #
+      # PREREQUISITES the OWNER must set up once (see packaging/homebrew/README.md):
+      #   * the `robinebers/homebrew-tap` repo must already exist (with a Casks/ dir), and
+      #   * the `HOMEBREW_TAP_TOKEN` / `HOMEBREW_GITHUB_API_TOKEN` secrets must be created.
+      # When a token is missing, the corresponding step warns and skips (tap) or soft-fails (official),
+      # so a release is never blocked by Homebrew automation.
+      - name: Bump cask in the personal Homebrew tap
+        if: steps.meta.outputs.channel == 'stable'
+        env:
+          # Fine-grained PAT with Contents:read&write on robinebers/homebrew-tap. Owner-created secret.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping the robinebers/homebrew-tap bump for $VERSION."
+            exit 0
+          fi
+          DMG="dist/OpenUsage-${VERSION}.dmg"
+          [ -f "$DMG" ] || { echo "$DMG missing — release.sh did not produce a DMG." >&2; exit 1; }
+          SHA256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+          echo "DMG sha256: $SHA256"
+
+          # Clone the tap, rewrite version + sha256 in its cask, and push. Start from this repo's
+          # source-of-truth cask so the tap always reflects the latest body (url/zap/depends_on/etc.),
+          # not just the two bumped lines.
+          tapdir="$(mktemp -d)"
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/robinebers/homebrew-tap.git" "$tapdir"
+          mkdir -p "$tapdir/Casks"
+          cp packaging/homebrew/Casks/openusage.rb "$tapdir/Casks/openusage.rb"
+          # Overwrite the version and the placeholder sha256 with this release's real values.
+          sed -i '' -E "s/^  version \".*\"/  version \"${VERSION}\"/" "$tapdir/Casks/openusage.rb"
+          sed -i '' -E "s/^  sha256 \"[0-9a-f]{64}\".*/  sha256 \"${SHA256}\"/" "$tapdir/Casks/openusage.rb"
+
+          # Confirm the rewrite actually landed (a silent no-op would ship a placeholder sha256).
+          grep -q "  version \"${VERSION}\"" "$tapdir/Casks/openusage.rb" \
+            || { echo "version rewrite failed in tap cask" >&2; exit 1; }
+          grep -q "  sha256 \"${SHA256}\"" "$tapdir/Casks/openusage.rb" \
+            || { echo "sha256 rewrite failed in tap cask" >&2; exit 1; }
+
+          git -C "$tapdir" config user.name "github-actions[bot]"
+          git -C "$tapdir" config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C "$tapdir" add Casks/openusage.rb
+          if git -C "$tapdir" diff --cached --quiet; then
+            echo "Tap cask already at $VERSION — nothing to push."
+          else
+            git -C "$tapdir" commit -m "openusage ${VERSION}"
+            git -C "$tapdir" push origin HEAD
+            echo "Pushed openusage ${VERSION} to robinebers/homebrew-tap."
+          fi
+
+      - name: Open bump PR against official Homebrew/homebrew-cask
+        # Stable-only and best-effort: the official cask lives in a third-party repo and the first bump
+        # may need a manual structural fix (the merged cask still points at the dead Tauri 0.6.28 build).
+        # `continue-on-error` so a failed/queued upstream bump never fails the release.
+        if: steps.meta.outputs.channel == 'stable'
+        continue-on-error: true
+        env:
+          # PAT that can fork Homebrew/homebrew-cask and open a PR (public-repo scope). Owner-created.
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          if [ -z "${HOMEBREW_GITHUB_API_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_GITHUB_API_TOKEN not set — skipping the official homebrew-cask bump for $VERSION."
+            exit 0
+          fi
+          # brew computes the new sha256 from the published release asset itself, so this must run AFTER
+          # the DMG is uploaded to the GitHub release (it is — see the publish step above).
+          brew tap homebrew/cask
+          brew bump-cask-pr --version "$VERSION" --no-browse openusage
+
+      # --- end Homebrew distribution -------------------------------------------------------------
+
       - name: Preserve Tauri updater manifest on stable releases
         if: steps.meta.outputs.channel == 'stable'
         env:
