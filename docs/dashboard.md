@@ -26,7 +26,16 @@ Rows with a reset date tick every 30 seconds, so countdowns and pace stay live b
 ## Right-click menus
 
 Every row: **Hide · Pin to menu bar / Unpin · Refresh \<provider\> · Customize…**
-Provider headers: **Hide \<provider\> · Refresh \<provider\> · Customize…** (Hide turns the whole provider off; turn it back on under Settings ▸ Providers.)
+Provider headers: **Hide \<provider\> · Refresh \<provider\> · Customize…** (Hide turns the whole provider off; turn it back on under Settings ▸ Providers.) plus **Share \<provider\>…** (see below).
+
+## Share
+
+Right-click a provider header and choose **Share \<provider\>…** to turn that provider's usage into a clean, branded image you can drop into a chat, a tweet, or a doc. The submenu has two choices:
+
+- **Copy Image** — puts the image on the clipboard, ready to paste.
+- **Save Image…** — opens a save dialog (default name like `OpenUsage-Claude-2026-06-27.png`).
+
+The image is a fixed 16:9 PNG using the app's look — the provider's mark and name up top, the metric rows you currently see for that provider, and a small OpenUsage mark in the corner. It follows your Light/Dark appearance and shows everything on the card as-is (nothing is hidden or blurred).
 
 ## Footer
 
