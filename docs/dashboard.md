@@ -4,6 +4,10 @@ The popover that opens from the menu bar icon. Providers are sections; each sect
 
 Each provider card leads with its **always-shown** metrics. Any metrics you've moved below the **Shown on Expand** line are tucked away behind the in-card caret — click it to reveal them below the caret, click again to collapse. Open cards stay open across popover closes and app restarts. A provider with nothing tucked away shows no caret.
 
+When you expand a card, the tucked-away metrics open below the caret as a single-column list, so each detail row keeps the full card width.
+
+A provider card can also show **quick-link buttons** pinned at the bottom of its expanded section — Status, Console, Dashboard, and the like — that open the provider's own pages in your default browser. They're part of the expander, so collapsing the caret hides them along with the tucked-away metrics. Buttons lay out up to three across, wrapping to a second row when there are more.
+
 ## Rows
 
 **Metrics with a limit** (session, weekly, credits with a cap) show a progress bar with:
