@@ -85,6 +85,10 @@ struct WidgetGroupedListView: View {
     private enum DashboardMetricCardRow: Identifiable {
         case metric(ResolvedRow)
         case divider
+        /// EXPLORATION (#596): the expanded ("Shown on Expand") metrics, rendered as one sticky grid
+        /// at the bottom of the card laying them up to three across — distinct from the single-column
+        /// always-shown rows above the caret.
+        case expandedGrid([ResolvedRow])
 
         var id: String {
             switch self {
@@ -92,6 +96,8 @@ struct WidgetGroupedListView: View {
                 "metric:\(row.descriptor.id)"
             case .divider:
                 "expanded-divider"
+            case .expandedGrid:
+                "expanded-grid"
             }
         }
     }
@@ -125,6 +131,8 @@ struct WidgetGroupedListView: View {
                         condensedTop: condensedIDs.contains(entry.descriptor.id))
                 case .divider:
                     expandToggle(providerID: providerID, isExpanded: isExpanded)
+                case .expandedGrid(let entries):
+                    expandedGrid(entries, in: providerID)
                 }
             }
         }
@@ -143,9 +151,12 @@ struct WidgetGroupedListView: View {
         hasExpandedMetrics: Bool,
         isExpanded: Bool
     ) -> [DashboardMetricCardRow] {
+        // EXPLORATION (#596): when open, the expanded metrics ship as a single `.expandedGrid` entry
+        // (laid up to three across) instead of one stacked `.metric` per row, so they read as a
+        // compact sticky cluster below the caret rather than continuing the single-column list.
         alwaysRows.map(DashboardMetricCardRow.metric)
             + (hasExpandedMetrics ? [.divider] : [])
-            + (isExpanded ? expandedRows.map(DashboardMetricCardRow.metric) : [])
+            + (isExpanded && !expandedRows.isEmpty ? [.expandedGrid(expandedRows)] : [])
     }
 
     /// The centered caret at the bottom of a provider card that reveals or hides its "Shown on expand"
@@ -174,6 +185,27 @@ struct WidgetGroupedListView: View {
         "\(providerID)::dashboard-expanded-divider"
     }
 
+    /// EXPLORATION (#596): the sticky expanded-metrics area. Lays the secondary metrics up to three
+    /// across via `ExpandedMetricsGrid`, with each cell reusing the same `row(...)` chrome (gesture,
+    /// context menu, reorder frame) as the single-column list, so reorder/customize keep working. A
+    /// cell never sets `condensedTop`: in a grid each cell is its own cluster, not stacked under a
+    /// text-row neighbor. Bounded meters and charts mark the set "wide" so the grid falls back to two
+    /// columns — three wide cells don't fit legibly at the ~292pt card width.
+    private func expandedGrid(_ entries: [ResolvedRow], in providerID: String) -> some View {
+        let byID = Dictionary(entries.map { ($0.descriptor.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let hasWideMetric = entries.contains { $0.data.isBounded || ($0.data.isChart && $0.data.hasData) }
+        return ExpandedMetricsGrid(
+            metricIDs: entries.map(\.descriptor.id),
+            hasWideMetric: hasWideMetric
+        ) { id in
+            if let entry = byID[id] {
+                // Tighter inset than the full-width rows: a narrow grid cell can't spare 14pt each side.
+                row(entry.descriptor, data: entry.data, in: providerID, condensedTop: false,
+                    horizontalInset: 8)
+            }
+        }
+    }
+
     private func visibleCondensedTextRowIDs(alwaysRows: [ResolvedRow], expandedRows: [ResolvedRow]) -> Set<String> {
         condensedTextRowIDs(alwaysRows).union(condensedTextRowIDs(expandedRows))
     }
@@ -190,13 +222,15 @@ struct WidgetGroupedListView: View {
         return ids
     }
 
-    private func row(_ descriptor: WidgetDescriptor, data: WidgetData, in providerID: String, condensedTop: Bool) -> some View {
+    private func row(_ descriptor: WidgetDescriptor, data: WidgetData, in providerID: String,
+                     condensedTop: Bool, horizontalInset: CGFloat = 14) -> some View {
         let isActive = activeMetricID == descriptor.id
         return WidgetRowView(
             data: data,
             onToggleResetDisplay: { dataStore.resetDisplayMode.toggle() },
             onToggleMeterStyle: { dataStore.meterStyle.toggle() },
-            condensedTop: condensedTop
+            condensedTop: condensedTop,
+            horizontalInset: horizontalInset
         )
             .contentShape(Rectangle())
             .opacity(isActive ? 0 : 1)

@@ -24,6 +24,10 @@ struct WidgetRowView: View {
     /// their neighbors — the list supplies it — and both densities use it to pull consecutive
     /// one-liners into a single cluster (Compact a step harder).
     var condensedTop: Bool = false
+    /// Horizontal inset for the row content. Defaults to the full-width card inset; the dashboard's
+    /// expanded-metrics grid (#596) passes a tighter value so narrow two/three-up cells don't lose
+    /// most of their width to padding.
+    var horizontalInset: CGFloat = 14
 
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
 
@@ -54,7 +58,7 @@ struct WidgetRowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, horizontalInset)
         // Bar rows are multi-line and earn breathing room; single-line text rows (Today / Yesterday /
         // Last 30 Days) stay tighter so consecutive ones read as a cluster, not evenly-spaced
         // full-height rows. This differentiation — not the fonts — is what kills the "jumpy" rhythm.

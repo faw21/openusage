@@ -4,6 +4,8 @@ The popover that opens from the menu bar icon. Providers are sections; each sect
 
 Each provider card leads with its **always-shown** metrics. Any metrics you've moved below the **Shown on Expand** line are tucked away behind the in-card caret — click it to reveal them below the caret, click again to collapse. Open cards stay open across popover closes and app restarts. A provider with nothing tucked away shows no caret.
 
+When you expand a card, the tucked-away metrics open in a compact area at the bottom laid **up to three across** (a wrapping grid), so a handful of small detail rows read as one cluster instead of a long single-column list. Wider metrics — progress bars and the Usage Trend chart — fall back to two across so they stay legible at the popover's width. A single tucked-away metric just shows as one full-width row.
+
 ## Rows
 
 **Metrics with a limit** (session, weekly, credits with a cap) show a progress bar with:
