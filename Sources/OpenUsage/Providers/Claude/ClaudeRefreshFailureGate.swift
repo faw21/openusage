@@ -61,16 +61,20 @@ struct ClaudeRefreshFailureGate: Sendable {
 
     /// Whether a refresh should be attempted now. True when there is no active block, when a transient
     /// block's window has elapsed, or when the credential fingerprint has changed since the failure
-    /// (throttled to one recheck per 15s).
-    func shouldAttempt(now: Date) -> Bool {
+    /// (throttled to one recheck per 15s, unless `forceRecheck` bypasses the throttle for paths that
+    /// must not miss a fresh credential — e.g. the provider's terminal-block short-circuit, which
+    /// would otherwise return `tokenExpired` for up to 15s after an external re-login changed the
+    /// fingerprint, while the already-loaded fresh candidates go untried).
+    func shouldAttempt(now: Date, forceRecheck: Bool = false) -> Bool {
         guard let state = loadState() else { return true }
 
         if case .transient = state.kind, let until = state.until, until <= now {
             return true
         }
 
-        // Fingerprint recheck, throttled. If the creds changed externally, unblock (both kinds).
-        if let last = state.lastRecheckAt, now.timeIntervalSince(last) < Self.recheckThrottle {
+        // Fingerprint recheck, throttled (unless forceRecheck). If the creds changed externally,
+        // unblock (both kinds).
+        if !forceRecheck, let last = state.lastRecheckAt, now.timeIntervalSince(last) < Self.recheckThrottle {
             return false
         }
         var refreshed = state

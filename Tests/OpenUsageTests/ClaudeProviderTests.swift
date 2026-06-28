@@ -1062,8 +1062,7 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertTrue(httpClient.requests.isEmpty, "terminal block with CLI unavailable must short-circuit")
     }
 
-    func testDelegatedRefreshUsesPreferredCandidateAfterCLIRotatesKeychain() async {
-        // Bugbot #8898f938: when the CLI rotates the preferred keychain (which was previously empty)
+    func testDelegatedRefreshUsesPreferredCandidateAfterCLIRotatesKeychain() async {        // Bugbot #8898f938: when the CLI rotates the preferred keychain (which was previously empty)
         // while we're probing the fallback file source, recovery must use the preferred (now-fresh)
         // keychain candidate — not the same-source (still-stale) file candidate. The original code
         // preferred the same source, so auth failed again and recorded a terminal block with the
@@ -1123,6 +1122,130 @@ final class ClaudeProviderTests: XCTestCase {
         let snapshot = await provider.refresh()
 
         XCTAssertEqual(Self.progress(snapshot.lines, "Session")?.used, 77)
+        XCTAssertNil(badge(snapshot.lines, "Error"))
+    }
+
+    // MARK: - Retry fetch gate updates + force recheck (bugbot #88d01254, #f6dcff9f)
+
+    func testRetryFetchAfterDelegatedRefreshRecordsTransientFor5xx() async {
+        // Bugbot #88d01254: after a successful delegated CLI recovery, the second `fetchLiveUsage`
+        // call sat inside the auth catch handler, so errors from the retry were not handled by the
+        // surrounding do/catch — a 5xx on the retry never invoked recordTransientFailure. The fix
+        // wraps the retry in its own do/catch that routes through the same gate-update logic.
+        let now = OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let path = "/tmp/claude/.credentials.json"
+        let files = FakeFiles([
+            path: #"{"claudeAiOauth":{"accessToken":"expired","expiresAt":1,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+        ])
+        let httpClient = RoutingHTTPClient { request in
+            if request.url.absoluteString.hasSuffix("/api/oauth/usage") {
+                let authorization = request.headers["Authorization"] ?? ""
+                if authorization.contains("expired") {
+                    return HTTPResponse(statusCode: 401, headers: [:], body: Data())
+                }
+                // The retry after delegated refresh uses the rotated token; return 503 to exercise
+                // the retry-catch path.
+                return HTTPResponse(statusCode: 503, headers: [:], body: Data())
+            }
+            return HTTPResponse(statusCode: 200, headers: [:], body: Data())
+        }
+        let authStore = ClaudeAuthStore(
+            environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+            files: files, keychain: FakeKeychain(), now: { now }
+        )
+        let runner = FingerprintRotatingRunner {
+            files.files[path] = #"{"claudeAiOauth":{"accessToken":"cli-rotated","expiresAt":4102444800000,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+        }
+        let gate = ClaudeRefreshFailureGate(
+            defaults: Self.isolatedDefaults(), storageKey: "gate",
+            currentFingerprint: { authStore.currentFingerprint() }
+        )
+        let provider = ClaudeProvider(
+            authStore: authStore,
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            ccusageRunner: CcusageRunner(processRunner: FakeProcessRunner(), homeDirectory: { URL(fileURLWithPath: "/Users/test") }),
+            coordinator: ClaudeDelegatedRefreshCoordinator(
+                processRunner: runner,
+                environment: FakeEnvironment(["CLAUDE_CLI_PATH": "/fake/claude"]),
+                currentFingerprint: { authStore.currentFingerprint() },
+                now: { now }, sleep: { _ in }, isExecutable: { $0 == "/fake/claude" },
+                defaults: Self.isolatedDefaults()
+            ),
+            failureGate: gate,
+            now: { now }
+        )
+
+        _ = await provider.refresh()
+
+        // The retry's 503 must have recorded a transient failure — without the fix, the gate would
+        // be empty (the retry's error skipped the catch block).
+        guard case .transient? = gate.currentBlockStatus(now: now) else {
+            return XCTFail("expected transient block after 503 on retry, got \(String(describing: gate.currentBlockStatus(now: now)))")
+        }
+    }
+
+    func testTerminalBlockShortCircuitDetectsFreshCredsImmediatelyWithinThrottle() async {
+        // Bugbot #f6dcff9f: the terminal short-circuit treated `!shouldAttempt` as "credentials
+        // unchanged," but shouldAttempt can be false for up to 15s solely because of the recheck
+        // throttle — even after an external re-login changed the fingerprint. So with the CLI
+        // unavailable, refresh returned tokenExpired for up to 15s after the user re-logged in,
+        // while the already-loaded fresh candidates went untried. The fix force-rechecks the
+        // fingerprint in the short-circuit, bypassing the throttle.
+        let now = OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let path = "/tmp/claude/.credentials.json"
+        let files = FakeFiles([
+            path: #"{"claudeAiOauth":{"accessToken":"expired","expiresAt":1,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+        ])
+        let httpClient = RoutingHTTPClient { request in
+            if request.url.absoluteString.hasSuffix("/api/oauth/usage") {
+                let authorization = request.headers["Authorization"] ?? ""
+                guard authorization.contains("fresh-after-relogin") else {
+                    return HTTPResponse(statusCode: 401, headers: [:], body: Data())
+                }
+                return HTTPResponse(
+                    statusCode: 200, headers: [:],
+                    body: Data(#"{"five_hour":{"utilization":99,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+                )
+            }
+            return HTTPResponse(statusCode: 200, headers: [:], body: Data())
+        }
+        let authStore = ClaudeAuthStore(
+            environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+            files: files, keychain: FakeKeychain(), now: { now }
+        )
+        let gate = ClaudeRefreshFailureGate(
+            defaults: Self.isolatedDefaults(), storageKey: "gate",
+            currentFingerprint: { authStore.currentFingerprint() }
+        )
+        // Prime a terminal block 5s in the past — INSIDE the 15s recheck throttle, so the throttled
+        // shouldAttempt would return false without a fingerprint recheck.
+        gate.recordTerminalAuthFailure(reason: "sessionExpired", now: now.addingTimeInterval(-5))
+
+        // Simulate an external `claude` re-login: rewrite the file with a fresh token. The fingerprint
+        // changes, but the gate's lastRecheckAt is only 5s ago (within the 15s throttle).
+        files.files[path] = #"{"claudeAiOauth":{"accessToken":"fresh-after-relogin","refreshToken":"fresh-refresh","expiresAt":4102444800000,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+
+        let provider = ClaudeProvider(
+            authStore: authStore,
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            ccusageRunner: CcusageRunner(processRunner: FakeProcessRunner(), homeDirectory: { URL(fileURLWithPath: "/Users/test") }),
+            coordinator: ClaudeDelegatedRefreshCoordinator(
+                processRunner: FingerprintRotatingRunner {},
+                environment: FakeEnvironment([:]),
+                currentFingerprint: { authStore.currentFingerprint() },
+                now: { now }, sleep: { _ in }, isExecutable: { _ in false },  // CLI unavailable
+                defaults: Self.isolatedDefaults()
+            ),
+            failureGate: gate,
+            now: { now }
+        )
+
+        let snapshot = await provider.refresh()
+
+        // The short-circuit must NOT fire: the fingerprint changed (external re-login), and the
+        // force-recheck detects it immediately even within the 15s throttle. The refresh proceeds
+        // with the fresh candidate and fetches live usage.
+        XCTAssertEqual(Self.progress(snapshot.lines, "Session")?.used, 99)
         XCTAssertNil(badge(snapshot.lines, "Error"))
     }
 

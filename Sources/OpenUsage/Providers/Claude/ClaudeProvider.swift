@@ -76,8 +76,13 @@ final class ClaudeProvider: ProviderRuntime {
         // a terminal block recorded when the CLI was unavailable or in cooldown would block all future
         // delegated attempts until the fingerprint changed — so installing the CLI or waiting out the
         // cooldown never triggered recovery (bugbot #bc1ed54a).
+        //
+        // The `forceRecheck: true` on `shouldAttempt` bypasses the gate's 15s recheck throttle so an
+        // external re-login (fingerprint change) is detected immediately, not up to 15s late — without
+        // it, the short-circuit would return `tokenExpired` for up to 15s after the user re-logged in,
+        // while the already-loaded fresh candidates go untried (bugbot #f6dcff9f).
         if case .terminal? = failureGate.currentBlockStatus(now: now()),
-           !failureGate.shouldAttempt(now: now()),
+           !failureGate.shouldAttempt(now: now(), forceRecheck: true),
            !coordinator.canAttempt(now: now()) {
             AppLog.info(LogTag.auth("claude"), "refresh blocked (terminal, credentials unchanged, CLI unavailable or in cooldown); not calling API")
             return ProviderSnapshot.error(provider: provider, error: ClaudeAuthError.tokenExpired)
@@ -131,22 +136,26 @@ final class ClaudeProvider: ProviderRuntime {
                 // re-read and retry the live fetch ONCE before falling back to the next source.
                 if let recovered = try await delegatedRefreshIfPossible(currentSource: state.source) {
                     state = recovered
-                    mapped = try await fetchLiveUsage(state: &state)
+                    // The retry is wrapped in its own do/catch so its errors route through the same
+                    // gate-update logic as the first attempt — without this, a 5xx on the retry would
+                    // skip recordTransientFailure, and an auth failure after rotation would skip the
+                    // terminal recording (bugbot #88d01254). We do NOT retry delegated refresh again
+                    // (to avoid loops): a second auth failure means the rotation didn't help.
+                    do {
+                        mapped = try await fetchLiveUsage(state: &state)
+                    } catch let retryError as ClaudeAuthError where retryError == .sessionExpired || retryError == .tokenExpired {
+                        failureGate.recordTerminalAuthFailure(reason: "\(retryError)", now: now())
+                        throw retryError
+                    } catch let retryError as ClaudeUsageError {
+                        recordTransientForUsageError(retryError)
+                        throw retryError
+                    }
                 } else {
                     failureGate.recordTerminalAuthFailure(reason: "\(error)", now: now())
                     throw error
                 }
             } catch let error as ClaudeUsageError {
-                // A transport/infra failure during refresh or fetch (connection failed / 5xx) is transient:
-                // the credential may be fine. Back the gate off exponentially rather than marking it dead.
-                // 5xx (server unavailable / bad gateway / etc.) is transient too — the server is briefly
-                // broken, not the credential. 4xx other than 401 (e.g. 403, 404) is NOT transient: it
-                // points at a real permission/config problem that re-trying won't fix.
-                if case .connectionFailed = error {
-                    failureGate.recordTransientFailure(now: now())
-                } else if case .requestFailed(let statusCode) = error, (500..<600).contains(statusCode) {
-                    failureGate.recordTransientFailure(now: now())
-                }
+                recordTransientForUsageError(error)
                 throw error
             }
         }
@@ -226,6 +235,18 @@ final class ClaudeProvider: ProviderRuntime {
     /// the stale same-source candidate caused auth to fail again and record a terminal block with the
     /// preferred source's (now valid) fingerprint, which then blocked all future refreshes including
     /// the good keychain (bugbot #8898f938).
+    /// Record a transient failure gate update for a usage error that's likely transient (connection
+    /// failure or 5xx). 4xx non-auth (e.g. 404) is NOT transient — it's a real problem re-trying won't
+    /// fix. Shared by the first-attempt catch and the retry-after-delegated-refresh catch so both
+    /// route through the same gate-update logic (bugbot #88d01254).
+    private func recordTransientForUsageError(_ error: ClaudeUsageError) {
+        if case .connectionFailed = error {
+            failureGate.recordTransientFailure(now: now())
+        } else if case .requestFailed(let statusCode) = error, (500..<600).contains(statusCode) {
+            failureGate.recordTransientFailure(now: now())
+        }
+    }
+
     private func delegatedRefreshIfPossible(currentSource: ClaudeCredentialState.Source) async throws -> ClaudeCredentialState? {
         // Allow the attempt when the gate says "go" (no block, transient expired, or fingerprint
         // changed) OR when a TERMINAL block is active but the coordinator could attempt now (CLI
