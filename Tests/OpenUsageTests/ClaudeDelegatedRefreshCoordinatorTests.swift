@@ -219,6 +219,34 @@ final class ClaudeDelegatedRefreshCoordinatorTests: XCTestCase {
         XCTAssertTrue(outcomes.allSatisfy { $0 == .attemptedSucceeded })
         XCTAssertEqual(runner.touchCount, 1, "concurrent attempts must share a single CLI launch")
     }
+
+    func testSuccessCooldownUsesInjectedTimeNotNowClosure() async {
+        // Bugbot #ed400fe6: runTouchAndVerify stamped the success cooldown with now() (the closure)
+        // while the short cooldown at attempt start used the `moment` passed via attempt(now:).
+        // Callers that inject time only via the parameter got mismatched cooldown timestamps. Fix:
+        // stamp the success cooldown with `moment` for consistency.
+        let box = FingerprintBox(.init(tokenHash: "before"))
+        let cliPath = "/opt/homebrew/bin/claude"
+        let runner = RecordingProcessRunner(resolvableExecutables: []) { box.set(.init(tokenHash: "after")) }
+        // makeCoordinator's default `now` closure returns 1_000_000; inject a DIFFERENT time via
+        // attempt(now:) to expose the mismatch.
+        let coordinator = makeCoordinator(
+            processRunner: runner,
+            executableCLIPaths: [cliPath],
+            fingerprint: { box.current }
+        )
+
+        let injectedTime = Date(timeIntervalSince1970: 2_000_000)
+        let outcome = await coordinator.attempt(now: injectedTime)
+        XCTAssertEqual(outcome, .attemptedSucceeded)
+
+        // The success cooldown must be stamped with the injected time (2_000_000), not the closure's
+        // default time (1_000_000). Reading the persisted lastAttempt timestamp verifies which time
+        // source was used.
+        let stamped = defaults.double(forKey: "last")
+        XCTAssertEqual(stamped, injectedTime.timeIntervalSince1970, accuracy: 0.001,
+                       "success cooldown must use the injected `moment` time, not the now() closure")
+    }
 }
 
 /// A mutable clock for coordinator tests (the provider tests have their own private `TestClock`).

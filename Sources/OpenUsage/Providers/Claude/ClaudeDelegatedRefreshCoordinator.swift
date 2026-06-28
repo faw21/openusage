@@ -150,7 +150,13 @@ struct ClaudeDelegatedRefreshCoordinator: Sendable {
         for delay in Self.verifyPollDelays {
             await sleep(delay)
             if currentFingerprint() != baseline {
-                stampCooldown(seconds: Self.successCooldown, now: now())
+                // Stamp the success cooldown with the same `moment` time source used for the short
+                // cooldown at attempt start, not `now()` — callers that inject time via
+                // `attempt(now:)` would otherwise get mismatched cooldown timestamps (bugbot
+                // #ed400fe6). The verify polls don't advance the injected clock in tests, and in
+                // production `moment == now()` so the ~1.5s of poll delay is negligible vs the 5-min
+                // cooldown.
+                stampCooldown(seconds: Self.successCooldown, now: moment)
                 AppLog.info(LogTag.auth("claude"), "delegated refresh: credential rotated (success)")
                 return .attemptedSucceeded
             }
