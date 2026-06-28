@@ -48,8 +48,10 @@ enum ShareCardRenderer {
         }
     }
 
-    /// Orchestrates a Copy as Image action end to end: resolve the provider's visible rows from the data
+    /// Orchestrates a Share Screenshot action end to end: resolve the provider's visible rows from the data
     /// store, build the card with the effective appearance, render it, and copy the PNG to the clipboard.
+    /// On a successful copy it asks the layout store to surface a transient "Copied to clipboard" pill —
+    /// a clipboard write gives no other signal that it landed.
     /// The rows mirror what the dashboard shows — always-shown plus expanded only when the provider's
     /// caret is open — so the export matches what the user sees.
     ///
@@ -96,5 +98,8 @@ enum ShareCardRenderer {
             return
         }
         copyToPasteboard(image)
+        // Surface a confirmation so the user knows the screenshot landed on the clipboard (a copy gives
+        // no other signal). Drives the floating "Copied to clipboard" pill above the footer.
+        layout.presentShareConfirmation()
     }
 }
