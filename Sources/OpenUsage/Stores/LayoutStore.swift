@@ -697,6 +697,15 @@ final class LayoutStore {
         }
     }
 
+    /// Clear any showing "Copied to clipboard" confirmation and cancel its auto-clear task. Called when
+    /// the popover closes so a pill mid-countdown can't reappear stale on the next open — the timer is
+    /// otherwise the only clearer, and the layout store outlives the popover.
+    func clearShareConfirmation() {
+        shareConfirmation = false
+        shareConfirmationClearTask?.cancel()
+        shareConfirmationClearTask = nil
+    }
+
     /// Pin or unpin a metric for the menu bar. Pinning is a no-op when it would exceed a cap, so callers
     /// can gate the control on `canPin` and trust this never over-pins. Undoable like the other layout
     /// actions — the no-op guards mean a denied or redundant pin records no step.

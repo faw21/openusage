@@ -212,6 +212,9 @@ struct DashboardView: View {
         if layout.screen != .dashboard { layout.screen = .dashboard }
         reorderLift = nil
         layout.cancelDrag()
+        // A "Copied to clipboard" pill mid-countdown would otherwise reappear stale on the next open,
+        // since the layout store survives the popover and only the timer clears it.
+        layout.clearShareConfirmation()
         // Drop the driven height so the next open re-establishes it (un-animated) from the reopened
         // screen's measurement instead of springing from this session's last value. Until then the
         // 0 sentinel keeps `PanelHeightModifier` from pushing, so the controller's opening guess stands.
