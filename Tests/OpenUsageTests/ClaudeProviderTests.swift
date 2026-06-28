@@ -957,6 +957,175 @@ final class ClaudeProviderTests: XCTestCase {
             "4xx non-auth (404) must not record a transient block")
     }
 
+    // MARK: - Terminal block escape hatch + preferred candidate (bugbot #bc1ed54a, #8898f938)
+
+    func testTerminalBlockAllowsRetryWhenCoordinatorCanAttempt() async {
+        // Bugbot #bc1ed54a: a terminal block recorded when the CLI was unavailable (or in cooldown)
+        // should NOT block the delegated refresh once the coordinator can attempt again (CLI available
+        // and not in cooldown). The short-circuit and delegatedRefreshIfPossible both check
+        // coordinator.canAttempt(now:) as an escape hatch, so the CLI gets a chance to rotate the
+        // credential even while the terminal block is active.
+        let now = OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let path = "/tmp/claude/.credentials.json"
+        let files = FakeFiles([
+            path: #"{"claudeAiOauth":{"accessToken":"expired","expiresAt":1,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+        ])
+        let httpClient = RoutingHTTPClient { request in
+            if request.url.absoluteString.hasSuffix("/api/oauth/usage") {
+                let authorization = request.headers["Authorization"] ?? ""
+                guard authorization.contains("cli-rotated") else {
+                    return HTTPResponse(statusCode: 401, headers: [:], body: Data())
+                }
+                return HTTPResponse(
+                    statusCode: 200, headers: [:],
+                    body: Data(#"{"five_hour":{"utilization":88,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+                )
+            }
+            return HTTPResponse(statusCode: 200, headers: [:], body: Data())
+        }
+        let authStore = ClaudeAuthStore(
+            environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+            files: files, keychain: FakeKeychain(), now: { now }
+        )
+        let runner = FingerprintRotatingRunner {
+            files.files[path] = #"{"claudeAiOauth":{"accessToken":"cli-rotated","expiresAt":4102444800000,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+        }
+        let gate = ClaudeRefreshFailureGate(
+            defaults: Self.isolatedDefaults(), storageKey: "gate",
+            currentFingerprint: { authStore.currentFingerprint() }
+        )
+        // Prime a terminal block 60s in the past (as if a prior refresh hit invalid_grant when the
+        // CLI was unavailable). The fingerprint is the expired token's, which is still current.
+        gate.recordTerminalAuthFailure(reason: "sessionExpired", now: now.addingTimeInterval(-60))
+
+        let provider = ClaudeProvider(
+            authStore: authStore,
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            ccusageRunner: CcusageRunner(processRunner: FakeProcessRunner(), homeDirectory: { URL(fileURLWithPath: "/Users/test") }),
+            coordinator: ClaudeDelegatedRefreshCoordinator(
+                processRunner: runner,
+                environment: FakeEnvironment(["CLAUDE_CLI_PATH": "/fake/claude"]),
+                currentFingerprint: { authStore.currentFingerprint() },
+                now: { now }, sleep: { _ in }, isExecutable: { $0 == "/fake/claude" },
+                defaults: Self.isolatedDefaults()
+            ),
+            failureGate: gate,
+            now: { now }
+        )
+
+        let snapshot = await provider.refresh()
+
+        // The terminal block is active, but the coordinator can attempt (CLI available, not in
+        // cooldown), so the refresh proceeds, the CLI rotates the credential, and live usage is fetched.
+        XCTAssertEqual(Self.progress(snapshot.lines, "Session")?.used, 88)
+        XCTAssertNil(badge(snapshot.lines, "Error"))
+    }
+
+    func testTerminalBlockShortCircuitsWhenCoordinatorCannotAttempt() async {
+        // Complement to the above: when the coordinator CANNOT attempt (CLI unavailable), the
+        // terminal block short-circuits the refresh as before — the escape hatch only opens when the
+        // CLI could actually help. This preserves the hammering-prevention behavior for the common
+        // case where the CLI isn't installed.
+        let now = OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let files = FakeFiles([
+            "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"expired","expiresAt":1,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+        ])
+        let httpClient = FakeHTTPClient(response: HTTPResponse(statusCode: 200, headers: [:], body: Data()))
+        let authStore = ClaudeAuthStore(
+            environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+            files: files, keychain: FakeKeychain(), now: { now }
+        )
+        let gate = ClaudeRefreshFailureGate(
+            defaults: Self.isolatedDefaults(), storageKey: "gate",
+            currentFingerprint: { authStore.currentFingerprint() }
+        )
+        gate.recordTerminalAuthFailure(reason: "sessionExpired", now: now.addingTimeInterval(-60))
+
+        let provider = ClaudeProvider(
+            authStore: authStore,
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            ccusageRunner: CcusageRunner(processRunner: FakeProcessRunner(), homeDirectory: { URL(fileURLWithPath: "/Users/test") }),
+            coordinator: ClaudeDelegatedRefreshCoordinator(
+                processRunner: FingerprintRotatingRunner {},
+                environment: FakeEnvironment([:]),
+                currentFingerprint: { authStore.currentFingerprint() },
+                now: { now }, sleep: { _ in }, isExecutable: { _ in false },  // CLI unavailable
+                defaults: Self.isolatedDefaults()
+            ),
+            failureGate: gate,
+            now: { now }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(badge(snapshot.lines, "Error"), ClaudeAuthError.tokenExpired.localizedDescription)
+        XCTAssertTrue(httpClient.requests.isEmpty, "terminal block with CLI unavailable must short-circuit")
+    }
+
+    func testDelegatedRefreshUsesPreferredCandidateAfterCLIRotatesKeychain() async {
+        // Bugbot #8898f938: when the CLI rotates the preferred keychain (which was previously empty)
+        // while we're probing the fallback file source, recovery must use the preferred (now-fresh)
+        // keychain candidate — not the same-source (still-stale) file candidate. The original code
+        // preferred the same source, so auth failed again and recorded a terminal block with the
+        // preferred source's (now valid) fingerprint, blocking all future refreshes including the
+        // good keychain.
+        let now = OpenUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let path = "/tmp/claude/.credentials.json"
+        let files = FakeFiles([
+            // File: expired access token, no refresh token — the #738/#753 dead-end shape.
+            path: #"{"claudeAiOauth":{"accessToken":"file-expired","expiresAt":1,"subscriptionType":"pro","scopes":["user:profile"]}}"#
+        ])
+        let keychain = ServiceKeychain()  // empty keychain → file is the only candidate initially
+        let authStore = ClaudeAuthStore(
+            environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+            files: files, keychain: keychain, now: { now }
+        )
+        let hashedService = authStore.keychainServiceCandidates().first!
+
+        let httpClient = RoutingHTTPClient { request in
+            if request.url.absoluteString.hasSuffix("/api/oauth/usage") {
+                let authorization = request.headers["Authorization"] ?? ""
+                guard authorization.contains("keychain-fresh") else {
+                    return HTTPResponse(statusCode: 401, headers: [:], body: Data())
+                }
+                return HTTPResponse(
+                    statusCode: 200, headers: [:],
+                    body: Data(#"{"five_hour":{"utilization":77,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+                )
+            }
+            return HTTPResponse(statusCode: 200, headers: [:], body: Data())
+        }
+
+        // The CLI touch writes a fresh token to the KEYCHAIN (the preferred source) — simulating the
+        // CLI rotating the keychain while the file is left stale.
+        let runner = FingerprintRotatingRunner {
+            keychain.currentUserValues[hashedService] = #"{"claudeAiOauth":{"accessToken":"keychain-fresh","refreshToken":"keychain-fresh-refresh","expiresAt":4102444800000,"subscriptionType":"max","scopes":["user:profile"]}}"#
+        }
+
+        let provider = ClaudeProvider(
+            authStore: authStore,
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            ccusageRunner: CcusageRunner(processRunner: FakeProcessRunner(), homeDirectory: { URL(fileURLWithPath: "/Users/test") }),
+            coordinator: ClaudeDelegatedRefreshCoordinator(
+                processRunner: runner,
+                environment: FakeEnvironment(["CLAUDE_CLI_PATH": "/fake/claude"]),
+                currentFingerprint: { authStore.currentFingerprint() },
+                now: { now }, sleep: { _ in }, isExecutable: { $0 == "/fake/claude" },
+                defaults: Self.isolatedDefaults()
+            ),
+            failureGate: ClaudeRefreshFailureGate(
+                defaults: Self.isolatedDefaults(), storageKey: "gate",
+                currentFingerprint: { authStore.currentFingerprint() }
+            ),
+            now: { now }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(Self.progress(snapshot.lines, "Session")?.used, 77)
+        XCTAssertNil(badge(snapshot.lines, "Error"))
+    }
+
     private static func isolatedDefaults() -> UserDefaults {
         UserDefaults(suiteName: "claude.provider.test.\(UUID().uuidString)")!
     }

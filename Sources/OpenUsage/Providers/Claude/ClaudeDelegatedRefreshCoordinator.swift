@@ -162,6 +162,16 @@ struct ClaudeDelegatedRefreshCoordinator: Sendable {
 
     // MARK: - Cooldown
 
+    /// Whether the coordinator could attempt a delegated refresh right now — the CLI resolves AND
+    /// no cooldown is active. Used by the provider's terminal-block short-circuit to decide whether
+    /// to skip the refresh entirely or let it proceed so the CLI gets a chance to rotate the
+    /// credential (e.g. after the user installed the CLI or the coordinator cooldown expired). Does
+    /// NOT touch the CLI or consume the cooldown — purely a probe.
+    func canAttempt(now: Date) -> Bool {
+        guard resolveCLI() != nil else { return false }
+        return !isInCooldown(now: now)
+    }
+
     private func isInCooldown(now moment: Date) -> Bool {
         guard defaults.object(forKey: lastAttemptKey) != nil else { return false }
         let last = Date(timeIntervalSince1970: defaults.double(forKey: lastAttemptKey))

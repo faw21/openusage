@@ -69,11 +69,17 @@ final class ClaudeProvider: ProviderRuntime {
         AppLog.info(LogTag.plugin("claude"), "refresh start (\(candidates.count) source\(candidates.count == 1 ? "" : "s"): \(sources))")
 
         // If a prior refresh left a TERMINAL block (the stored refresh chain is dead) and the credential
-        // hasn't changed since, skip the network entirely — only an external `claude` re-login (which
-        // changes the fingerprint and clears the gate via `shouldAttempt`) can recover. Checked once here,
-        // before the candidate loop, so a fresh re-login is still tried the moment creds change.
-        if case .terminal? = failureGate.currentBlockStatus(now: now()), !failureGate.shouldAttempt(now: now()) {
-            AppLog.info(LogTag.auth("claude"), "refresh blocked (terminal, credentials unchanged); not calling API")
+        // hasn't changed since, skip the network — UNLESS the coordinator could attempt a delegated
+        // refresh right now (CLI available and not in cooldown). In that case, let the refresh proceed
+        // so the CLI gets a chance to rotate the credential (e.g. the user installed the CLI after the
+        // terminal block was recorded, or the coordinator cooldown expired). Without this escape hatch,
+        // a terminal block recorded when the CLI was unavailable or in cooldown would block all future
+        // delegated attempts until the fingerprint changed — so installing the CLI or waiting out the
+        // cooldown never triggered recovery (bugbot #bc1ed54a).
+        if case .terminal? = failureGate.currentBlockStatus(now: now()),
+           !failureGate.shouldAttempt(now: now()),
+           !coordinator.canAttempt(now: now()) {
+            AppLog.info(LogTag.auth("claude"), "refresh blocked (terminal, credentials unchanged, CLI unavailable or in cooldown); not calling API")
             return ProviderSnapshot.error(provider: provider, error: ClaudeAuthError.tokenExpired)
         }
 
@@ -215,17 +221,35 @@ final class ClaudeProvider: ProviderRuntime {
     /// refresh token in the source OpenUsage reads). Gated so a dead credential doesn't launch the CLI on
     /// every refresh: only attempts when the failure gate allows it, and only treats success as a real
     /// rotation (verified by the coordinator's fingerprint check). On success, re-reads the credential
-    /// candidates and returns the one matching the source we were probing (else the preferred one).
+    /// candidates and returns the PREFERRED one — the CLI typically rotates the preferred source
+    /// (keychain on macOS), so the same-source candidate we were probing may still be stale. Returning
+    /// the stale same-source candidate caused auth to fail again and record a terminal block with the
+    /// preferred source's (now valid) fingerprint, which then blocked all future refreshes including
+    /// the good keychain (bugbot #8898f938).
     private func delegatedRefreshIfPossible(currentSource: ClaudeCredentialState.Source) async throws -> ClaudeCredentialState? {
-        guard failureGate.shouldAttempt(now: now()) else { return nil }
+        // Allow the attempt when the gate says "go" (no block, transient expired, or fingerprint
+        // changed) OR when a TERMINAL block is active but the coordinator could attempt now (CLI
+        // available and not in cooldown). The terminal-escape hatch lets the CLI retry after the
+        // block was recorded — e.g. the user installed the CLI or the coordinator cooldown expired
+        // — without it, the terminal block would block the delegated attempt forever (bugbot
+        // #bc1ed54a). The coordinator's own cooldown still rate-limits the actual CLI touch.
+        let gateAllows = failureGate.shouldAttempt(now: now())
+        let terminalEscape: Bool = {
+            guard case .terminal? = failureGate.currentBlockStatus(now: now()) else { return false }
+            return coordinator.canAttempt(now: now())
+        }()
+        guard gateAllows || terminalEscape else { return nil }
 
         let outcome = await coordinator.attempt(now: now())
         switch outcome {
         case .attemptedSucceeded:
             failureGate.recordSuccess()
             let candidates = await loadOffMainActor { [authStore] in authStore.loadCredentialCandidates() }
-            // Prefer the same source we were probing; otherwise the first (preferred) candidate.
-            let recovered = candidates.first(where: { $0.source == currentSource }) ?? candidates.first
+            // Use the PREFERRED candidate (first) after recovery. The CLI rotates whichever source it
+            // owns (keychain on macOS, file on Linux) — that's the preferred source in both cases, so
+            // the same-source candidate we were probing (e.g. a fallback file probe after the keychain
+            // failed) may still be stale while the preferred keychain is now fresh.
+            let recovered = candidates.first
             if recovered != nil {
                 AppLog.info(LogTag.auth("claude"), "delegated refresh recovered credentials; retrying live fetch")
             }
