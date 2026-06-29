@@ -107,8 +107,10 @@ struct ReorderLiftPreview: View {
 
     private func customizeMetricPreview(_ title: String) -> some View {
         CustomizeMetricRow(title: title,
-            leading: { CustomizeSwitchPlaceholder() },
-            trailing: { CustomizeStarPlaceholder() }
+            trailing: {
+                CustomizeStarPlaceholder()
+                CustomizeSwitchPlaceholder()
+            }
         )
         .liftedRowSurface()
     }

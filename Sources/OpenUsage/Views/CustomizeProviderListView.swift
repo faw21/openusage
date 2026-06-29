@@ -34,8 +34,9 @@ struct CustomizeProviderListView: View {
             provider: row.provider,
             isEnabled: row.isEnabled,
             metricCount: row.metricCount,
-            // Drag-reorder is enabled only for active providers — `reorderProvider` operates on the
-            // enabled set, so a disabled row's grip stays inert (the row still opens/toggles).
+            // The grip leads the tappable bar; a tap opens L2, a drag reorders. Drag-reorder is enabled
+            // only for active providers — `reorderProvider` operates on the enabled set, so a disabled
+            // row's grip stays inert (the row still opens/toggles).
             handle: { grip in
                 if row.isEnabled {
                     AnyView(grip.highPriorityGesture(providerDragGesture(for: row)))

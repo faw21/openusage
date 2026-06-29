@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// One row in the Customize provider list (L1). Carries the provider mark + name, an Active/Inactive
-/// status label, a metric-count badge, the master on/off toggle, and a chevron into the provider's
-/// detail (L2). The leading grip is the drag handle for reordering providers — the caller attaches
-/// the reorder gesture through `handle` (and leaves it inert for the lifted drag preview). The toggle
-/// drives `ProviderEnablementStore`; tapping the name or chevron opens L2. Disabled providers render
-/// greyed (`.opacity 0.55`) but stay visible and openable.
+/// One row in the Customize provider list (L1). The drag grip leads (drag-only — a tap on it does
+/// nothing); the middle content (mark + name + count) is tappable to open the provider's detail (L2)
+/// and expands to fill, so the empty space between the name and the toggle is tappable too; the
+/// trailing on/off toggle toggles; the caret after the toggle also opens L2. So: tap anything except
+/// the grip or the toggle to open L2, drag the grip to reorder. The secondary line shows the
+/// provider's total metric count. Disabled providers render greyed but stay openable.
 struct ProviderListRow<Handle: View>: View {
     let provider: Provider
     let isEnabled: Bool
@@ -18,26 +18,30 @@ struct ProviderListRow<Handle: View>: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            // Drag handle only — outside the open target so a tap on the grip doesn't open L2.
             handle(AnyView(ReorderGrip()))
-            Button(action: onOpen) {
-                HStack(spacing: 10) {
-                    ProviderIcon(source: provider.icon)
-                        .frame(width: 18, height: 18)
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 6) {
-                            Text(provider.displayName)
-                                .font(.system(size: density.headerPointSize, weight: .semibold))
-                                .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
-                                .lineLimit(1)
-                            countBadge
-                        }
-                        statusLabel
-                    }
-                    Spacer(minLength: 8)
+
+            // Open target: mark + name + count, expanding to fill so the gap before the toggle is
+            // tappable. `onTapGesture` on a content-shaped, full-width view is the reliable way to make
+            // the whole area (including the empty spacer) hit-test, where a plain Button's hit area
+            // would shrink to its drawn content.
+            HStack(spacing: 10) {
+                ProviderIcon(source: provider.icon)
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(provider.displayName)
+                        .font(.system(size: density.headerPointSize, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("\(metricCount) metrics")
+                        .font(.system(size: density.planBadgePointSize))
+                        .foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 8)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .onTapGesture { onOpen() }
 
             Toggle("", isOn: Binding(get: { isEnabled }, set: { onToggle($0) }))
                 .settingsSwitchStyle()
@@ -55,26 +59,5 @@ struct ProviderListRow<Handle: View>: View {
         .padding(.horizontal, 12)
         .padding(.vertical, density.controlRowPadding)
         .opacity(isEnabled ? 1 : 0.55)
-    }
-
-    private var countBadge: some View {
-        Text("\(metricCount)")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(.quaternary))
-            .accessibilityLabel("\(metricCount) metrics")
-    }
-
-    private var statusLabel: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(isEnabled ? Theme.positive : AnyShapeStyle(Color.secondary.opacity(0.6)))
-                .frame(width: 6, height: 6)
-            Text(isEnabled ? "Active" : "Inactive")
-                .font(.system(size: density.planBadgePointSize))
-                .foregroundStyle(isEnabled ? Theme.positive : AnyShapeStyle(.secondary))
-        }
     }
 }

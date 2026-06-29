@@ -1,12 +1,18 @@
 import SwiftUI
 
-/// The Customize detail for one provider (L2): a provider header (mark + name + Active/Inactive +
-/// the master on/off toggle) over a single card holding two labeled sections — **Always Visible**
-/// (metrics shown above the dashboard caret) and **On Demand** (metrics behind the caret) — split by
-/// the dashed divider. Dragging a metric across that divider moves it between sections via the
-/// existing `applyMetricDividerOrder` sentinel mechanic. Each metric row is toggle · name · star ·
-/// grip (the star is the menu-bar pin). Available even when the provider is disabled: the sections
-/// render dimmed but stay editable, with the header toggle as the primary re-enable action.
+/// The Customize detail for one provider (L2): two distinct cards — **Always Visible** (shown on the
+/// dashboard card) and **On Demand** (tucked behind the card's caret). Drag a metric onto a row in
+/// the other card to move it across; an empty card shows a small dashed "Drag metrics here" drop zone
+/// that's also the drop target for moving a metric into it. Each metric row is grip · name · star ·
+/// toggle (drag left, toggle right — same shape as the provider rows). The star is always visible:
+/// outline when not starred, filled accent when starred. Providers that need an API key get their own
+/// "API Key" section here too.
+///
+/// The two sections are separate `ForEach`es (so they're visually distinct cards). That reintroduces
+/// the stuck-drag risk: when a dragged row crosses into the other card, SwiftUI tears down the source
+/// view (and its gesture) mid-drag, so `onEnded` never fires and the lift overlay would stick. Each
+/// row clears the drag state on `.onDisappear` — by the time the source view is removed, the metric
+/// has already moved to the other card, so the drag is genuinely over and the lift unsticks.
 struct CustomizeProviderDetailView: View {
     @Environment(LayoutStore.self) private var layout
     @Environment(AppContainer.self) private var container
@@ -16,20 +22,16 @@ struct CustomizeProviderDetailView: View {
     let rowFrames: [String: CGRect]
 
     @State private var activeMetricID: String?
-    @State private var hoveredMetricID: String?
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
 
     var body: some View {
-        if let group = layout.customizeDetail(for: providerID),
-           let provider = layout.provider(id: providerID) {
-            let isEnabled = container.enablement.isEnabled(providerID)
-            VStack(alignment: .leading, spacing: density.headerToCardSpacing) {
-                providerHeader(provider, isEnabled: isEnabled)
-                metricCard(group)
-                    .opacity(isEnabled ? 1 : 0.6)
+        if let group = layout.customizeDetail(for: providerID) {
+            VStack(alignment: .leading, spacing: density.sectionSpacing) {
+                metricSection("Always Visible", metrics: group.alwaysShownMetrics, providerID: providerID)
+                metricSection("On Demand", metrics: group.expandedMetrics, providerID: providerID)
                 // Providers that need a user-supplied key (OpenRouter today) get their own "API Key"
-                // section here — the same editor logic the Settings ▸ API Keys card used, scoped to this
-                // one provider. Hidden for providers that don't need a key.
+                // section here — the same editor logic the Settings ▸ API Keys card used, scoped to
+                // this one provider. Hidden for providers that don't need a key.
                 if let keyProvider = container.apiKeyProviders.first(where: { $0.provider.id == providerID }) {
                     APIKeysSection(providers: [keyProvider])
                 }
@@ -42,71 +44,44 @@ struct CustomizeProviderDetailView: View {
         }
     }
 
-    // MARK: - Provider header
+    // MARK: - Metric sections
 
-    private func providerHeader(_ provider: Provider, isEnabled: Bool) -> some View {
-        HStack(spacing: 10) {
-            ProviderIcon(source: provider.icon)
-                .frame(width: 18, height: 18)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(provider.displayName)
-                    .font(.system(size: density.headerPointSize, weight: .semibold))
-                    .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
-                    .lineLimit(1)
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(isEnabled ? Theme.positive : AnyShapeStyle(Color.secondary.opacity(0.6)))
-                        .frame(width: 6, height: 6)
-                    Text(isEnabled ? "Active" : "Inactive")
-                        .font(.system(size: density.planBadgePointSize))
-                        .foregroundStyle(isEnabled ? Theme.positive : AnyShapeStyle(.secondary))
+    private func metricSection(_ title: String, metrics: [WidgetDescriptor], providerID: String) -> some View {
+        VStack(alignment: .leading, spacing: density.headerToCardSpacing) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+            VStack(spacing: 0) {
+                if metrics.isEmpty {
+                    emptyDropZone(providerID: providerID)
+                } else {
+                    ForEach(metrics, id: \.id) { metric in
+                        metricRow(metric, in: providerID)
+                    }
                 }
             }
-            Spacer(minLength: 8)
-            // The master on/off toggle — the primary action, especially when the provider is disabled.
-            Toggle("", isOn: Binding(
-                get: { isEnabled },
-                set: { container.enablement.setEnabled($0, for: provider.id) }
-            ))
-            .settingsSwitchStyle()
+            .cardSurface()
         }
-        .padding(.horizontal, 8)
     }
 
-    // MARK: - Metric card
-
-    private func metricCard(_ group: ProviderMetrics) -> some View {
-        VStack(spacing: 0) {
-            ForEach(metricCardRows(for: group)) { row in
-                switch row {
-                case .sectionLabel(let label):
-                    sectionLabel(label)
-                case .metric(let metric):
-                    metricRow(metric, in: group.provider.id)
-                case .divider:
-                    expandedDivider(providerID: group.provider.id)
-                }
-            }
-        }
-        .cardSurface()
-    }
-
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
-    }
-
-    private func metricCardRows(for group: ProviderMetrics) -> [CustomizeMetricCardRow] {
-        [.sectionLabel("Always Visible")]
-            + group.alwaysShownMetrics.map(CustomizeMetricCardRow.metric)
-            + [.divider]
-            + [.sectionLabel("On Demand")]
-            + group.expandedMetrics.map(CustomizeMetricCardRow.metric)
+    /// A small dashed drop target shown when a section is empty, so there's always somewhere to drop
+    /// a metric into. It carries the divider's reorder frame — dropping a metric here moves it into
+    /// this section via `applyMetricDividerOrder` (the sentinel sits at the empty section's edge).
+    private func emptyDropZone(providerID: String) -> some View {
+        let yOutset = max(0, (density.estimatedMetricRowHeight - 30) / 2)
+        return RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            .foregroundStyle(.tertiary)
+            .frame(height: 30)
+            .padding(8)
+            .overlay(
+                Text("Drag metrics here")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            )
+            .reorderFrame(id: expandedDividerID(for: providerID), in: .named(reorderSpaceName), yOutset: yOutset)
+            .accessibilityLabel("Drag metrics here")
     }
 
     private func metricRow(_ metric: WidgetDescriptor, in providerID: String) -> some View {
@@ -114,88 +89,28 @@ struct CustomizeProviderDetailView: View {
         return CustomizeMetricRow(
             title: metric.title,
             handle: { $0.highPriorityGesture(metricDragGesture(for: metric.id, providerID: providerID, title: metric.title)) },
-            leading: {
+            trailing: {
+                StarButton(metric: metric)
                 Toggle("", isOn: Binding(
                     get: { layout.isMetricEnabled(metric.id) },
                     set: { layout.setMetricEnabled(metric.id, $0) }
                 ))
                 .settingsSwitchStyle()
-            },
-            trailing: {
-                starButton(metric)
             }
         )
         .contentShape(Rectangle())
         .opacity(isActive ? 0 : 1)
-        .onHover { hovering in
-            if hovering {
-                hoveredMetricID = metric.id
-            } else if hoveredMetricID == metric.id {
-                hoveredMetricID = nil
+        // Two-card stuck-drag safeguard: when a dragged row crosses into the other section's card,
+        // SwiftUI removes this source view (and its drag gesture) mid-drag, so onEnded never fires and
+        // the lift overlay would stick. By the time onDisappear fires, the metric has already moved to
+        // the other card, so the drag is genuinely over — clear the state so the lift unsticks.
+        .onDisappear {
+            if activeMetricID == metric.id {
+                activeMetricID = nil
+                reorderLift = nil
             }
         }
         .reorderFrame(id: metric.id, in: .named(reorderSpaceName))
-    }
-
-    /// The star (menu-bar pin) control on a metric row: a filled star when starred, an outline star on
-    /// row hover otherwise. At a cap the star dims but stays clickable — a denied click routes through
-    /// `notePinDenied`, which surfaces the reason in the footer (WhatsApp-style feedback) instead of
-    /// silently doing nothing.
-    @ViewBuilder
-    private func starButton(_ metric: WidgetDescriptor) -> some View {
-        if metric.pinnable {
-            let pinned = layout.isPinned(metric.id)
-            let blocked = !layout.canPin(metric.id)   // false when pinned, so unstar always works
-            let visible = pinned || hoveredMetricID == metric.id
-            Button {
-                if blocked {
-                    layout.notePinDenied(metric.id)
-                } else {
-                    layout.togglePin(metric.id)
-                }
-            } label: {
-                Image(systemName: pinned ? "star.fill" : "star")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(pinned ? Color.accentColor : Color.secondary)
-            .opacity(visible ? (blocked ? 0.35 : 1) : 0)
-            .allowsHitTesting(visible)
-            .hoverTooltip(starHelp(metric))
-            .animation(Motion.spring, value: visible)
-            .animation(Motion.spring, value: pinned)
-        }
-    }
-
-    private func starHelp(_ metric: WidgetDescriptor) -> String {
-        if layout.isPinned(metric.id) { return "Unstar" }
-        return layout.pinDenialReason(metric.id) ?? "Star for menu bar"
-    }
-
-    // MARK: - Divider
-
-    /// The single dashed boundary between Always Visible and On Demand. Kept visually simple so it
-    /// reads as one drop target instead of several moving controls.
-    private func expandedDivider(providerID: String) -> some View {
-        let yOutset = max(0, (density.estimatedMetricRowHeight - density.customizeDividerRowHeight) / 2)
-        return dashedRule
-            .padding(.horizontal, 12)
-            .frame(height: density.customizeDividerRowHeight)
-            .reorderFrame(id: expandedDividerID(for: providerID), in: .named(reorderSpaceName), yOutset: yOutset)
-            .accessibilityLabel("On Demand divider")
-    }
-
-    private var dashedRule: some View {
-        Rectangle()
-            .fill(.clear)
-            .frame(height: 1)
-            .overlay(
-                Line()
-                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .foregroundStyle(.tertiary)
-            )
     }
 
     // MARK: - Metric drag-reorder
@@ -237,30 +152,34 @@ struct CustomizeProviderDetailView: View {
     }
 }
 
-/// A single horizontal line, used as the dashed On Demand rule. A plain `Divider` can't carry a dash
-/// pattern, so the separator strokes this shape instead.
-private struct Line: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.midY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-        return path
-    }
-}
+/// The star (menu-bar pin) control on a metric row — always visible: an outline star when not
+/// starred, a filled accent star when starred. A denied click (over the per-provider cap) shakes the
+/// star; the hover tooltip carries the reason.
+private struct StarButton: View {
+    let metric: WidgetDescriptor
+    @Environment(LayoutStore.self) private var layout
+    @State private var shakeTrigger = 0
 
-private enum CustomizeMetricCardRow: Identifiable {
-    case sectionLabel(String)
-    case metric(WidgetDescriptor)
-    case divider
-
-    var id: String {
-        switch self {
-        case .sectionLabel(let label):
-            "section:\(label)"
-        case .metric(let metric):
-            "metric:\(metric.id)"
-        case .divider:
-            "expanded-divider"
+    var body: some View {
+        if metric.pinnable {
+            let pinned = layout.isPinned(metric.id)
+            Button {
+                if layout.canPin(metric.id) {
+                    layout.togglePin(metric.id)
+                } else {
+                    shakeTrigger += 1
+                }
+            } label: {
+                Image(systemName: pinned ? "star.fill" : "star")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(pinned ? Color.accentColor : Color.secondary)
+            .hoverTooltip(pinned ? "Unstar" : (layout.pinDenialReason(metric.id) ?? "Star for menu bar"))
+            .denyShake(trigger: shakeTrigger)
+            .animation(Motion.spring, value: pinned)
         }
     }
 }

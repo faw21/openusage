@@ -1,32 +1,29 @@
 import SwiftUI
 
 /// The Customize metric row shape, shared by the live row in `CustomizeProviderDetailView` and the
-/// lifted drag preview in `ReorderLiftPreview`. The layout is **toggle · label · star · grip** — the
-/// toggle leads with the metric name beside it (left-aligned), the star (menu-bar pin) and the drag
-/// grip trail. Defining the grip + label slot once is what keeps the floating preview pixel-identical
-/// to the row the user is dragging — the two used to be hand-rebuilt separately and drifted apart.
+/// lifted drag preview in `ReorderLiftPreview`. The layout is **grip · label · star · toggle** — the
+/// drag grip leads (left), the name follows, and the star + on/off toggle trail on the right. This
+/// mirrors the provider row's "drag left, toggle right" arrangement. Defining the grip slot once is
+/// what keeps the floating preview pixel-identical to the row the user is dragging.
 ///
-/// `leading` is the on/off toggle (live) or a placeholder (preview). `trailing` is the star button
-/// (live) or a placeholder (preview). `handle` wraps the trailing drag grip — the live row attaches
-/// its reorder gesture through it; the preview leaves it inert.
-struct CustomizeMetricRow<Leading: View, Handle: View, Trailing: View>: View {
+/// `handle` wraps the leading drag grip — the live row threads its reorder gesture through it; the
+/// preview leaves it inert. `trailing` is the star button + toggle (live) or placeholders (preview).
+struct CustomizeMetricRow<Handle: View, Trailing: View>: View {
     let title: String
-    /// Wraps the trailing drag grip. The live row threads its reorder gesture through here; the
+    /// Wraps the leading drag grip. The live row threads its reorder gesture through here; the
     /// preview leaves it untouched.
     let handle: (AnyView) -> Handle
-    @ViewBuilder var leading: Leading
     @ViewBuilder var trailing: Trailing
 
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
 
     var body: some View {
         HStack(spacing: 10) {
-            leading
+            handle(AnyView(ReorderGrip()))
             Text(title)
                 .foregroundStyle(.primary)
             Spacer(minLength: 8)
             trailing
-            handle(AnyView(ReorderGrip()))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, density.controlRowPadding)
@@ -35,8 +32,8 @@ struct CustomizeMetricRow<Leading: View, Handle: View, Trailing: View>: View {
 
 extension CustomizeMetricRow where Handle == AnyView {
     /// Static variant for the lifted drag preview: the grip is rendered inert (no gesture).
-    init(title: String, @ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
-        self.init(title: title, handle: { $0 }, leading: leading, trailing: trailing)
+    init(title: String, @ViewBuilder trailing: () -> Trailing) {
+        self.init(title: title, handle: { $0 }, trailing: trailing)
     }
 }
 
