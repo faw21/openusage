@@ -102,6 +102,12 @@ struct DashboardView: View {
                         return true
                     },
                     onReturn: {
+                        // From a provider's L2 detail, back out to the L1 list first — matching Esc —
+                        // so Return steps L2 → L1 → dashboard instead of jumping L2 → dashboard.
+                        if layout.customizeProviderID != nil {
+                            withAnimation(Motion.spring) { layout.customizeProviderID = nil }
+                            return true
+                        }
                         let target: PopoverScreen = layout.screen == .dashboard ? .customize : .dashboard
                         withAnimation(Motion.modeSwitch) { layout.screen = target }
                         return true
