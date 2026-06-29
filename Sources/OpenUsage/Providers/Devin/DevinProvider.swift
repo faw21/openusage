@@ -7,7 +7,8 @@ final class DevinProvider: ProviderRuntime {
         displayName: "Devin",
         icon: .providerMark("devin"),
         links: [
-            .init(label: "Dashboard", url: "https://app.devin.ai/settings/plans")
+            .init(label: "Dashboard", url: "https://app.devin.ai/settings/plans"),
+            .init(label: "Docs", url: "https://docs.devin.ai/admin/billing/usage")
         ]
     )
 
