@@ -6,13 +6,13 @@ OpenUsage accepts contributions through an approved-issue workflow. Read this en
 
 OpenUsage is highly opinionated. It focuses on clean design, fast performance, and a great user experience. The feature set is intentionally limited to core functionality: tracking AI coding subscription usage, nothing more. Contributions that try to expand that scope, add unnecessary complexity, or compromise the UX will be closed.
 
-If you're unsure whether your idea fits, open an issue first. External pull requests without a linked approved issue are closed automatically.
+If you're unsure whether your idea fits, open an issue first. External pull requests without a linked approved issue are closed by the maintainer-run gatekeeper automation.
 
 ## Ground Rules
 
 - No feature creep. If it's not about usage tracking, it doesn't belong here.
 - External PRs require an open issue approved by a maintainer with the `status:approved` label before review.
-- No approved issue, no review. PRs without an approved issue are closed automatically.
+- No approved issue, no review. PRs without an approved issue are closed by the maintainer-run gatekeeper automation.
 - No AI-generated commit messages. Write your own.
 - AI-assisted issues and PRs must say so. Do not imply work was written fully by a human if an AI agent generated or materially shaped it.
 - You must be able to explain your changes in plain human words.
@@ -70,7 +70,9 @@ Don't open a PR for features without approval first. [Open an issue](https://git
 
 External pull requests require an open issue approved by a maintainer before review. Approval is represented by the `status:approved` label on the linked issue.
 
-PRs are closed automatically when they:
+The auto-close behavior is enforced by the maintainer-run OpenUsage PR Gatekeeper Codex automation, not by contributor code or a GitHub Actions policy workflow.
+
+PRs are closed by automation when they:
 
 - Do not link an approved open issue
 - Link an issue that is closed, unapproved, rejected, or out of scope

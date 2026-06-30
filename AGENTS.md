@@ -61,7 +61,7 @@ Before creating or updating a pull request, determine whether the author is a re
 
 If the author is not a maintainer or collaborator, verify that the PR links an open issue in this repository with maintainer approval. The only approval signal is the `status:approved` label on the issue.
 
-If there is no linked approved issue, do not continue preparing the PR as if it is reviewable. Explain that OpenUsage strictly auto-closes external PRs without an approved issue, then direct the contributor to:
+If there is no linked approved issue, do not continue preparing the PR as if it is reviewable. Explain that OpenUsage strictly closes external PRs without an approved issue through maintainer-run gatekeeper automation, then direct the contributor to:
 
 1. Open an issue describing the problem, proposed change, and evidence.
 2. Wait for maintainer approval with the `status:approved` label.

@@ -105,7 +105,7 @@ The repository must be public (Sparkle fetches the DMG and appcast anonymously),
 
 ## Contributing
 
-Issues and focused PRs are welcome through the approved-issue workflow — read [CONTRIBUTING.md](CONTRIBUTING.md) first; the quality bar is deliberately high. External PRs without an approved issue are closed automatically. Report security issues privately per [SECURITY.md](SECURITY.md). The OpenUsage name and logo are covered by the [trademark policy](TRADEMARK.md).
+Issues and focused PRs are welcome through the approved-issue workflow — read [CONTRIBUTING.md](CONTRIBUTING.md) first; the quality bar is deliberately high. External PRs without an approved issue are closed by the maintainer-run gatekeeper automation. Report security issues privately per [SECURITY.md](SECURITY.md). The OpenUsage name and logo are covered by the [trademark policy](TRADEMARK.md).
 
 ## License
 
