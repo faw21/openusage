@@ -2,15 +2,7 @@ import Foundation
 
 @MainActor
 final class OpenRouterProvider: ProviderRuntime {
-    let provider = Provider(
-        id: "openrouter",
-        displayName: "OpenRouter",
-        icon: .providerMark("openrouter"),
-        links: [
-            .init(label: "Dashboard", url: "https://openrouter.ai/activity"),
-            .init(label: "API Keys", url: "https://openrouter.ai/keys")
-        ]
-    )
+    let provider = Provider(id: "openrouter", displayName: "OpenRouter", icon: .providerMark("openrouter"))
 
     let authStore: OpenRouterAuthStore
     let usageClient: OpenRouterUsageClient
