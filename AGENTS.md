@@ -55,6 +55,24 @@ Every PR description must follow this structure so reviewers can skim it quickly
 - **Tests** (optional) — how the change was verified.
 - **Screenshots** (optional in general, but **required for any PR that makes a visual change**) — images of the affected UI after the change.
 
+### External PR Preflight
+
+Before creating or updating a pull request, determine whether the author is a repository maintainer or collaborator.
+
+If the author is not a maintainer or collaborator, verify that the PR links an open issue in this repository with maintainer approval. The only approval signal is the `status:approved` label on the issue.
+
+If there is no linked approved issue, do not continue preparing the PR as if it is reviewable. Explain that OpenUsage strictly auto-closes external PRs without an approved issue, then direct the contributor to:
+
+1. Open an issue describing the problem, proposed change, and evidence.
+2. Wait for maintainer approval with the `status:approved` label.
+3. Open a small PR that only implements the approved scope.
+
+External PRs without approved issues are not review candidates; they are closure candidates.
+
+Agents must also verify that every PR includes a plain-English explanation of what changed and why. If an AI agent or AI tool generated or materially shaped an issue, PR, commit message, code, tests, or docs, the PR must say so. Do not falsely imply fully human authorship for AI-assisted work.
+
+External PRs that hide AI assistance, cannot be explained in human words, touch sensitive repo areas without explicit approved scope, or exceed the size limits in `CONTRIBUTING.md` should be labeled or closed by automation.
+
 ## Documentation
 
 - Logic changes must update any docs in `docs/` that describe the affected behavior.

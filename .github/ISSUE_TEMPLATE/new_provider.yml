@@ -6,7 +6,8 @@ body:
     attributes:
       value: |
         Want to add a new AI provider to OpenUsage? Fill in the details below.
-        You can submit just a request, or build the provider yourself and open a PR.
+        You can submit just a request, or build the provider yourself after a maintainer approves this issue with `status:approved`.
+        OpenUsage is selective. A provider needs clear demand, accessible usage data, and a strong fit with usage tracking.
   - type: input
     id: provider_name
     attributes:
@@ -22,6 +23,25 @@ body:
     validations:
       required: true
   - type: textarea
+    id: demand
+    attributes:
+      label: Demand Evidence
+      description: Why should OpenUsage support this provider? Link user requests, issue votes, community demand, paid usage, or other concrete proof.
+      placeholder: |
+        - Existing user requests:
+        - Provider popularity or paid-plan relevance:
+        - Why this matters to OpenUsage users:
+    validations:
+      required: true
+  - type: textarea
+    id: fit
+    attributes:
+      label: Why does this belong in OpenUsage?
+      description: Explain why this provider fits the app's intentionally narrow usage-tracking scope.
+      placeholder: This belongs because ...
+    validations:
+      required: true
+  - type: textarea
     id: data
     attributes:
       label: What usage data does this provider expose?
@@ -30,6 +50,18 @@ body:
         - Monthly request limit: 500
         - Accessible via: dashboard at provider.com/usage
         - Auth method: session cookie
+    validations:
+      required: true
+  - type: textarea
+    id: feasibility
+    attributes:
+      label: Auth/API Feasibility
+      description: Explain how OpenUsage can access the data. Name the auth method only; never paste secrets, tokens, cookies, or private account data.
+      placeholder: |
+        - Credential source:
+        - API/dashboard endpoint:
+        - Rate limits or known restrictions:
+        - Can be tested locally:
     validations:
       required: true
   - type: dropdown

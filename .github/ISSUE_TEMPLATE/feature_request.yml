@@ -7,6 +7,7 @@ body:
       value: |
         Before requesting a feature, check existing issues to avoid duplicates.
         OpenUsage focuses on AI subscription usage tracking. Requests outside that scope will be closed.
+        External PRs require this issue to be approved by a maintainer with `status:approved` before review.
   - type: textarea
     id: problem
     attributes:
@@ -20,6 +21,25 @@ body:
     attributes:
       label: Proposed Solution
       description: How do you think this should work?
+    validations:
+      required: true
+  - type: textarea
+    id: fit
+    attributes:
+      label: Fit With OpenUsage
+      description: Why does this belong in a focused AI usage-tracking menu-bar app?
+      placeholder: This fits because ...
+    validations:
+      required: true
+  - type: textarea
+    id: demand
+    attributes:
+      label: Demand Evidence
+      description: Who needs this, and how do you know? Link requests, examples, screenshots, or other concrete proof when possible.
+      placeholder: |
+        - Users affected:
+        - Evidence:
+        - Why existing behavior is not enough:
     validations:
       required: true
   - type: textarea

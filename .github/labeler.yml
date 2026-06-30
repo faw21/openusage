@@ -17,3 +17,15 @@ docs:
 ci:
   - changed-files:
       - any-glob-to-any-file: ".github/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Package.swift"
+          - "Package.resolved"
+
+release:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/release.yml"
+          - "docs/updates.md"
