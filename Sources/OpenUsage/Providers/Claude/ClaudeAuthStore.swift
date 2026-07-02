@@ -57,6 +57,7 @@ struct ClaudeCredentialState: Hashable, Sendable {
 
 enum ClaudeAuthError: Error, LocalizedError, Equatable {
     case notLoggedIn
+    case desktopAppOnly
     case sessionExpired
     case tokenExpired
     case invalidOAuthURL(String)
@@ -65,6 +66,8 @@ enum ClaudeAuthError: Error, LocalizedError, Equatable {
         switch self {
         case .notLoggedIn:
             return "Not logged in. Run `claude` to authenticate."
+        case .desktopAppOnly:
+            return "Signed in to the Claude desktop app? OpenUsage needs a CLI login — run `claude` in a terminal and sign in once."
         case .sessionExpired:
             return "Session expired. Run `claude` to log in again."
         case .tokenExpired:
@@ -84,7 +87,7 @@ enum ClaudeAuthError: Error, LocalizedError, Equatable {
         switch self {
         case .sessionExpired, .tokenExpired:
             return true
-        case .notLoggedIn, .invalidOAuthURL:
+        case .notLoggedIn, .desktopAppOnly, .invalidOAuthURL:
             return false
         }
     }
@@ -149,6 +152,21 @@ struct ClaudeAuthStore: Sendable {
     /// callers that only need a single source.
     func loadCredentials() -> ClaudeCredentialState? {
         loadCredentialCandidates().first
+    }
+
+    /// Data folders the Claude desktop app keeps under `~/Library/Application Support` — the standalone
+    /// Claude Code app and the Claude Code area inside the main Claude app. Their presence (checked only
+    /// when no CLI credentials exist anywhere) means the user likely signed in through the desktop app,
+    /// whose session lives in an Electron `safeStorage`-encrypted blob OpenUsage can't read (#825).
+    private static let desktopAppDataPaths = [
+        "~/Library/Application Support/Claude Code",
+        "~/Library/Application Support/Claude/claude-code"
+    ]
+
+    /// Whether a desktop-app login is the likely reason no CLI credentials were found, so the provider
+    /// can explain that a one-time `claude` CLI login is needed instead of a bare "Not logged in".
+    func hasDesktopAppData() -> Bool {
+        Self.desktopAppDataPaths.contains { files.exists($0) }
     }
 
     func needsRefresh(_ oauth: ClaudeOAuth) -> Bool {

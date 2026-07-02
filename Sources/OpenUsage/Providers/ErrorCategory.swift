@@ -52,7 +52,7 @@ protocol CategorizedError: Error {
 extension ClaudeAuthError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {
-        case .notLoggedIn: .notLoggedIn
+        case .notLoggedIn, .desktopAppOnly: .notLoggedIn
         case .sessionExpired, .tokenExpired: .authExpired
         case .invalidOAuthURL: .authInvalid
         }
