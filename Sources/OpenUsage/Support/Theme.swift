@@ -3,12 +3,14 @@ import AppKit
 
 /// Central palette + surface styles. Surfaces stay adaptive (light/dark).
 ///
-/// The popover is always a solid, opaque panel — glass is reserved for the footer chrome (its frosted
-/// bar and the controls on it), never the data region behind it (Apple's guidance: glass for
-/// navigation/controls, content on an opaque surface). The data region mirrors the macOS System
-/// Settings grouped look: a bright page "tray" with borderless grouped cards lifted off it by the
-/// system's own `.fill.quaternary` (the same subtle fill Settings' grouped boxes use — no hand-tuned
-/// values), so it adapts to light/dark like every other Mac app.
+/// By default the popover is a solid, opaque panel; the opt-in Increase Transparency mode (and the
+/// secret-code egg) make it translucent. Either way, Liquid Glass is reserved for the footer/top-bar
+/// chrome — the controls/navigation layer — and never the data cards: Apple's guidance is to keep
+/// Liquid Glass out of the content layer and back content with standard materials instead. The data
+/// region mirrors the macOS System Settings grouped look: a page "tray" with borderless grouped cards
+/// lifted off it by the system's own `.fill.quaternary` (no hand-tuned values), so it adapts to
+/// light/dark like every other Mac app. Under the translucent treatment the cards swap their opaque
+/// base for a frosted standard material so text stays legible (see `cardSurface`).
 enum Theme {
     /// Hierarchical secondary tint for the provider marks.
     static let iconGray = AnyShapeStyle(.secondary)
@@ -97,14 +99,33 @@ extension View {
 /// grouped box in both light and dark. The opaque base means a lifted drag preview stays solid while
 /// it floats; the page base under a live card is the same color as the tray behind it, so it's
 /// invisible there. `lifted` is unused — both paths share the one surface.
+///
+/// Under the translucent surface treatment (Increase Transparency / the secret-code egg) the opaque page base
+/// is dropped so the behind-window vibrancy backdrop shows through, while the system grouped fill stays
+/// so cards still read as grouped boxes over the desktop.
 private struct CardSurfaceModifier: ViewModifier {
     let lifted: Bool
+    @Environment(\.popoverSurfaceTreatment) private var treatment
 
     func body(content: Content) -> some View {
         content.background {
-            Theme.cardShape
-                .fill(Theme.traySurface)
-                .overlay { Theme.cardShape.fill(Theme.cardFill) }
+            switch treatment {
+            case .opaque:
+                Theme.cardShape
+                    .fill(Theme.traySurface)
+                    .overlay { Theme.cardShape.fill(Theme.cardFill) }
+            case .translucent:
+                // Increase Transparency, party, and drunk: the card carries its own frosted
+                // `.regularMaterial` so metric text stays legible over whatever shows through the
+                // behind-window backdrop (the desktop, or the party tint over it), with `.fill.quaternary`
+                // on top preserving the grouped-card hierarchy. HIG: back content-layer surfaces with a
+                // standard material — a bare low-opacity fill over the desktop is the "washed out"
+                // anti-pattern. This is a standard material, not `glassEffect`: Liquid Glass stays in the
+                // chrome layer, not the content cards.
+                Theme.cardShape
+                    .fill(.regularMaterial)
+                    .overlay { Theme.cardShape.fill(Theme.cardFill) }
+            }
         }
     }
 }

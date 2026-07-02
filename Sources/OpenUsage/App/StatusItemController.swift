@@ -30,6 +30,9 @@ final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let panel: MenuBarPanel
     private let hostingController: NSHostingController<AnyView>
+    /// The panel's backdrop: an opaque tray by default, swapped to a behind-window vibrancy view when
+    /// the transparency style is non-opaque. Built once and toggled, so it can't race the style observer.
+    private let backdrop = PopoverBackdropView(cornerRadius: StatusItemController.cornerRadius)
     /// The screen the status-item button is on, captured on show — used to clamp the saved panel size
     /// to whatever display the panel is currently opening on.
     private var anchorScreen: NSScreen?
@@ -74,6 +77,7 @@ final class StatusItemController: NSObject {
                     .environment(container)
                     .environment(container.layout)
                     .environment(container.dataStore)
+                    .environment(container.transparency)
                     .environment(updater)
             )
         )
@@ -94,6 +98,7 @@ final class StatusItemController: NSObject {
         configurePanel()
         configureStatusItem()
         updateButtonImage()
+        applyTransparency()
 
         appearanceObserver = NotificationCenter.default.addObserver(
             forName: AppearanceSetting.didChangeNotification,
@@ -146,24 +151,14 @@ final class StatusItemController: NSObject {
 
         let container = NSView()
 
-        // Opaque backdrop: the popover is a solid panel — the data region never shows the desktop
-        // through it. Liquid Glass is reserved for the footer chrome (its frosted bar + controls),
-        // rendered in-window over this opaque backing, never behind the data. The box fills the whole
-        // window, so a screen-switch resize can't briefly reveal a transparent strip beneath the
-        // content-sized SwiftUI surface, and any region SwiftUI leaves unpainted shows this opaque
-        // tray, not a hole to the desktop. `Theme.trayNSColor` tracks light/dark (and the forced
-        // appearance override) and matches the SwiftUI tray (`DashboardView.PopoverSurface`); rounded
-        // via `cornerRadius` so it follows the panel's shape. `panel.appearance` (tracked by
-        // `appearanceObserver`) pins the light/dark mode.
-        let backdrop = NSBox()
-        backdrop.boxType = .custom
-        backdrop.titlePosition = .noTitle
-        backdrop.borderWidth = 0
-        backdrop.cornerRadius = Self.cornerRadius
-        backdrop.contentViewMargins = .zero
-        backdrop.fillColor = Theme.trayNSColor
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-
+        // Backdrop: by default an opaque tray so the data region never shows the desktop through it
+        // (Liquid Glass stays reserved for the footer chrome, rendered in-window over this backing). The
+        // `PopoverBackdropView` also holds a behind-window vibrancy layer that the transparency style
+        // swaps in for Increase Transparency / the secret-code egg. It fills the whole window, so a
+        // screen-switch resize can't reveal a transparent strip, and any region SwiftUI leaves unpainted
+        // shows the backdrop, not a raw hole. Its opaque tray is `Theme.trayNSColor` (tracks light/dark
+        // and the forced appearance override) matching the SwiftUI tray (`DashboardView.PopoverSurface`),
+        // rounded via `cornerRadius`. `panel.appearance` (tracked by `appearanceObserver`) pins the mode.
         let host = hostingController.view
         host.translatesAutoresizingMaskIntoConstraints = false
         host.wantsLayer = true
@@ -248,6 +243,47 @@ final class StatusItemController: NSObject {
             ?? MenuBarStripRenderer.fallbackIcon
     }
 
+    // MARK: - Transparency
+
+    /// True once the launch application has run, so subsequent style changes animate (the first one
+    /// shouldn't fade in from nothing).
+    private var hasAppliedTransparency = false
+
+    /// Applies the resolved transparency style to the panel and re-arms on the next change. Mirrors
+    /// `updateButtonImage`'s `withObservationTracking` re-arm (its `onChange` is one-shot). Reads the
+    /// store's `effectiveStyle`, which folds in the persisted toggle, the egg state, and the system
+    /// accessibility flags — so this fires whenever any of them changes. Backdrop already exists (it's a
+    /// stored property), so the first call from `init` safely sets the initial look.
+    ///
+    /// On every change after launch the window alpha and the backdrop crossfade ease together in one
+    /// ~0.55s group, matching the SwiftUI side (`tooMuchTransparency`'s `.animation`), so toggling the
+    /// egg or Increase Transparency fades in and out instead of snapping.
+    private func applyTransparency() {
+        let style = withObservationTracking {
+            container.transparency.effectiveStyle
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.applyTransparency()
+            }
+        }
+        let mode: PopoverBackdropView.Mode = style.surfaceTreatment == .opaque ? .opaque : .translucent
+        if hasAppliedTransparency {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.55
+                context.allowsImplicitAnimation = true
+                panel.animator().alphaValue = style.windowAlpha
+                backdrop.setMode(mode, animated: true)
+            }
+        } else {
+            hasAppliedTransparency = true
+            panel.alphaValue = style.windowAlpha
+            backdrop.setMode(mode, animated: false)
+        }
+        // Shadow isn't animatable; set it directly (the crossfade masks the change).
+        panel.hasShadow = style.wantsShadow
+        panel.invalidateShadow()
+    }
+
     // MARK: - Show / hide
 
     @objc private func statusButtonClicked() {
@@ -307,6 +343,11 @@ final class StatusItemController: NSObject {
             AppLog.error(.statusItem, "Cannot show panel: status item has no button")
             return
         }
+        // Mark the popover on-screen before laying out, so the egg's animation loops mount their
+        // `TimelineView` clocks in time for the first displayed frame. Read by the SwiftUI egg via
+        // `\.popoverIsVisible`; a closed popover keeps the loops unmounted, so a left-on egg costs no CPU.
+        container.transparency.setPopoverShown(true)
+
         // Drop any morph heights still queued from a previous session so a quick reopen during an old
         // spring can't apply a stale height to this fresh open.
         PanelHeightBridge.invalidate()
@@ -348,6 +389,10 @@ final class StatusItemController: NSObject {
         if panel.isVisible {
             PanelHeightStore.save(panel.frame.height, for: container.layout.screen)
         }
+        // Closing: drop the on-screen flag so the egg's animation loops unmount their `TimelineView`
+        // clocks and stop ticking — the whole point of the gate (no CPU while the egg is left on but the
+        // popover is hidden). This is the authoritative hide signal, flipped synchronously with `orderOut`.
+        container.transparency.setPopoverShown(false)
         panel.orderOut(nil)
         stopOutsideClickMonitors()
         statusItem.button?.highlight(false)
