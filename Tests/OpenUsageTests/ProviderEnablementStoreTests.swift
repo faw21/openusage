@@ -148,6 +148,35 @@ final class ProviderEnablementStoreTests: XCTestCase {
         XCTAssertTrue(store.isEnabled("a-provider-that-ships-next-year"))
     }
 
+    // MARK: - Known-provider set
+
+    func testRegisterKnownProvidersReturnsNewOnesAndPersists() {
+        let defaults = makeDefaults("known")
+        let store = ProviderEnablementStore(defaults: defaults)
+        XCTAssertTrue(store.knownIDs.isEmpty)
+
+        XCTAssertEqual(store.registerKnownProviders(["claude", "codex"]), ["claude", "codex"])
+        XCTAssertEqual(store.registerKnownProviders(["claude", "grok"]), ["grok"], "only never-seen IDs")
+        XCTAssertEqual(store.registerKnownProviders(["claude"]), [], "no-op re-registration")
+
+        let reloaded = ProviderEnablementStore(defaults: defaults)
+        XCTAssertEqual(reloaded.knownIDs, ["claude", "codex", "grok"])
+    }
+
+    func testRegisterKnownProvidersDoesNotTouchEnablement() {
+        // Pure bookkeeping: registering must not flip any toggle or wake the refresh loop.
+        let store = ProviderEnablementStore(defaults: makeDefaults("known-pure"))
+        store.seedEnabledProviders(["claude"])
+        let notPosted = XCTNSNotificationExpectation(name: ProviderEnablementStore.didChangeNotification)
+        notPosted.isInverted = true
+
+        store.registerKnownProviders(["claude", "grok"])
+
+        XCTAssertEqual(store.enabledIDs, ["claude"])
+        XCTAssertFalse(store.isEnabled("grok"))
+        wait(for: [notPosted], timeout: 0.2)
+    }
+
     private func makeDefaults(_ name: String) -> UserDefaults {
         let suiteName = "OpenUsageTests.Enablement.\(name).\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

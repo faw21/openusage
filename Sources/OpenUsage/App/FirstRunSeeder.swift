@@ -30,6 +30,9 @@ enum FirstRunSeeder {
         let known = Set(providers.map(\.provider.id))
         let fallback = fallbackProviderIDs.intersection(known)
         enablement.seedEnabledProviders(fallback)
+        // Baseline the known-provider set: everything shipping today has been "seen" by this install,
+        // so `NewProviderSeeder` only ever probes providers added in a later release.
+        enablement.registerKnownProviders(known)
         onboarding.markCustomizeHintPending()
         AppLog.info(.config, "first run: seeded providers \(fallback.sorted()); probing local credentials")
 

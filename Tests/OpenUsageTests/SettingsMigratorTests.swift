@@ -172,6 +172,87 @@ final class SettingsMigratorTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: "betaUpdatesEnabled"))
     }
 
+    // MARK: - v2: enabled-list unification + known-provider set
+
+    /// A legacy disabled-list install converts to the equivalent enabled list: everything on except the
+    /// explicitly disabled IDs — behavior-preserving — and the known set records the providers of the
+    /// v2 era so none of them is later treated as "new" and probed.
+    @MainActor  // `ProviderEnablementStore` (used to verify the migrated shape) is main-actor.
+    func testV2ConvertsLegacyDisabledListToEnabledList() {
+        let (defaults, domain) = makeDefaults("V2Legacy")
+        defer { defaults.removePersistentDomain(forName: domain) }
+        defaults.set(1, forKey: SettingsMigrator.schemaVersionKey)
+        defaults.set(["devin", "grok"], forKey: "openusage.disabledProviders.v1")
+
+        let result = SettingsMigrator.migrate(defaults: defaults, domainName: domain)
+
+        XCTAssertEqual(result, SettingsSchema.current)
+        let enabled = Set(defaults.stringArray(forKey: "openusage.enabledProviders.v1") ?? [])
+        XCTAssertEqual(enabled, Set(SettingsSchema.v2ProviderIDs).subtracting(["devin", "grok"]))
+        XCTAssertNil(defaults.stringArray(forKey: "openusage.disabledProviders.v1"), "legacy key removed")
+        XCTAssertEqual(
+            Set(defaults.stringArray(forKey: "openusage.knownProviders.v1") ?? []),
+            Set(SettingsSchema.v2ProviderIDs)
+        )
+
+        // The store loads the migrated shape: same effective on/off set, now in enabled-list mode.
+        let store = ProviderEnablementStore(defaults: defaults)
+        XCTAssertNotNil(store.enabledIDs)
+        XCTAssertTrue(store.isEnabled("claude"))
+        XCTAssertFalse(store.isEnabled("devin"))
+        XCTAssertFalse(store.isEnabled("grok"))
+    }
+
+    /// A legacy install with no disabled providers (the all-on default) converts to all-on.
+    func testV2ConvertsAllOnLegacyInstall() {
+        let (defaults, domain) = makeDefaults("V2AllOn")
+        defer { defaults.removePersistentDomain(forName: domain) }
+        defaults.set(1, forKey: SettingsMigrator.schemaVersionKey)
+        defaults.set("custom", forKey: "openusage.layout.v1")  // some settings, so not a fresh install
+
+        SettingsMigrator.migrate(defaults: defaults, domainName: domain)
+
+        XCTAssertEqual(
+            Set(defaults.stringArray(forKey: "openusage.enabledProviders.v1") ?? []),
+            Set(SettingsSchema.v2ProviderIDs)
+        )
+    }
+
+    /// An install already in enabled-list mode (fresh-installed after first-run detection shipped)
+    /// keeps its enabled set untouched and only gains the known set.
+    func testV2LeavesExistingEnabledListAloneAndSeedsKnownSet() {
+        let (defaults, domain) = makeDefaults("V2EnabledList")
+        defer { defaults.removePersistentDomain(forName: domain) }
+        defaults.set(1, forKey: SettingsMigrator.schemaVersionKey)
+        defaults.set(["claude", "cursor"], forKey: "openusage.enabledProviders.v1")
+
+        SettingsMigrator.migrate(defaults: defaults, domainName: domain)
+
+        XCTAssertEqual(
+            Set(defaults.stringArray(forKey: "openusage.enabledProviders.v1") ?? []),
+            ["claude", "cursor"]
+        )
+        XCTAssertEqual(
+            Set(defaults.stringArray(forKey: "openusage.knownProviders.v1") ?? []),
+            Set(SettingsSchema.v2ProviderIDs)
+        )
+    }
+
+    /// Re-running the v2 step (an interrupted upgrade replays it) changes nothing.
+    func testV2IsIdempotent() {
+        let (defaults, domain) = makeDefaults("V2Idempotent")
+        defer { defaults.removePersistentDomain(forName: domain) }
+        defaults.set(1, forKey: SettingsMigrator.schemaVersionKey)
+        defaults.set(["codex"], forKey: "openusage.disabledProviders.v1")
+
+        SettingsMigrator.migrate(defaults: defaults, domainName: domain)
+        let enabledAfterFirst = defaults.stringArray(forKey: "openusage.enabledProviders.v1")
+        defaults.set(1, forKey: SettingsMigrator.schemaVersionKey)  // simulate an interrupted upgrade
+        SettingsMigrator.migrate(defaults: defaults, domainName: domain)
+
+        XCTAssertEqual(defaults.stringArray(forKey: "openusage.enabledProviders.v1"), enabledAfterFirst)
+    }
+
     // MARK: - Schema integrity
 
     /// Guards against editing the migration list without bumping `current` (or vice versa): every

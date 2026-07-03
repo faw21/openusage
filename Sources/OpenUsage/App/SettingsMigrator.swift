@@ -18,19 +18,39 @@ struct SettingsMigration: Sendable {
 enum SettingsSchema {
     /// Current schema version. Keep equal to the highest migration `version` below (or the baseline when
     /// there are none). This is NOT the app version — bump it only alongside a migration you add.
-    static let current = 1
+    static let current = 2
+
+    /// The provider IDs that existed when the v2 migration shipped, frozen forever. A migration is a
+    /// point-in-time transform: any future build with more providers also contains this migration, so a
+    /// legacy install jumping several versions is first converted with this exact list, and
+    /// `NewProviderSeeder` then picks up everything added afterwards as new. Never edit this list.
+    static let v2ProviderIDs = [
+        "antigravity", "claude", "codex", "copilot", "cursor", "devin", "grok", "openrouter", "zai"
+    ]
 
     /// Ordered migrations, each taking the domain one version higher. v1 is the baseline — the settings
     /// shape at the moment this system replaced the beta-era "wipe on every update" behavior — so it
-    /// needs no transform and the list starts empty. Add future steps here, e.g.:
-    ///
-    ///     SettingsMigration(version: 2) { defaults in
-    ///         if let value = defaults.object(forKey: "oldKey") {
-    ///             defaults.set(value, forKey: "newKey")
-    ///             defaults.removeObject(forKey: "oldKey")
-    ///         }
-    ///     }
-    static let migrations: [SettingsMigration] = []
+    /// needs no transform. Migrations reference storage keys as string literals on purpose: they are
+    /// frozen transforms and must keep working even if a store renames its key constant later.
+    static let migrations: [SettingsMigration] = [
+        // v2 unifies every install onto enabled-list mode (see `ProviderEnablementStore`) and records
+        // which providers the install has seen (`NewProviderSeeder` probes only never-seen ones):
+        // - legacy disabled-list installs convert to the equivalent enabled list (behavior-preserving:
+        //   the effective on/off set is identical before and after),
+        // - every install gets the known-provider set seeded with the providers of this era, so nothing
+        //   already shipped is retroactively treated as "new" and re-enabled against the user's choice.
+        SettingsMigration(version: 2) { defaults in
+            if defaults.stringArray(forKey: "openusage.enabledProviders.v1") == nil {
+                let disabled = Set(defaults.stringArray(forKey: "openusage.disabledProviders.v1") ?? [])
+                let enabled = v2ProviderIDs.filter { !disabled.contains($0) }
+                defaults.set(enabled, forKey: "openusage.enabledProviders.v1")
+                defaults.removeObject(forKey: "openusage.disabledProviders.v1")
+            }
+            if defaults.stringArray(forKey: "openusage.knownProviders.v1") == nil {
+                defaults.set(v2ProviderIDs, forKey: "openusage.knownProviders.v1")
+            }
+        }
+    ]
 }
 
 /// Versioned, cascading settings migration — the replacement for the beta-era domain wipe. Runs once at

@@ -6,19 +6,25 @@ import Observation
 /// Two storage modes, distinguished by which key exists:
 /// - **Legacy disabled-list** (`openusage.disabledProviders.v1`): only the *disabled* IDs are persisted.
 ///   "Everything on" is an empty set, so a provider shipped in a future release defaults to enabled.
-///   Every install that predates minimal defaults stays in this mode forever — their world started
-///   all-on, and new providers keep appearing automatically, as they always have.
+///   Since the v2 settings migration converted every install to enabled-list mode, this branch is a
+///   dormant read path kept for downgrade safety only.
 /// - **Enabled-list** (`openusage.enabledProviders.v1`): only the *enabled* IDs are persisted. Fresh
 ///   installs are seeded into this mode (see `FirstRunSeeder`) with just the providers detected on the
-///   machine, so a provider shipped in a future release defaults to OFF — consistent with the minimal
-///   world those users started in.
+///   machine; existing installs were migrated into it (settings schema v2).
 ///
 /// When the enabled-list key exists it wins; the legacy key is ignored.
+///
+/// A third set — **known provider IDs** (`openusage.knownProviders.v1`) — records every provider this
+/// install has ever seen. In enabled-list mode "absent from the enabled set" is ambiguous (deliberately
+/// turned off, or didn't exist yet?); the known set resolves it. `NewProviderSeeder` diffs the registry
+/// against it each launch and credential-probes only the never-seen providers, so a user's choice to
+/// keep a known provider off is never overridden.
 @MainActor
 @Observable
 final class ProviderEnablementStore {
     private static let disabledStorageKey = "openusage.disabledProviders.v1"
     private static let enabledStorageKey = "openusage.enabledProviders.v1"
+    private static let knownStorageKey = "openusage.knownProviders.v1"
 
     /// Posted when the enabled-provider set actually changes. The refresh loop listens for this to wake
     /// early and fetch a newly-enabled provider promptly, instead of waiting out the full interval —
@@ -41,6 +47,9 @@ final class ProviderEnablementStore {
     private(set) var disabledIDs: Set<String>
     /// Enabled-list-mode state; `nil` means legacy disabled-list mode.
     private(set) var enabledIDs: Set<String>?
+    /// Every provider ID this install has ever seen (see the type comment). Seeded by the v2 settings
+    /// migration or `FirstRunSeeder`, then grown by `registerKnownProviders`.
+    private(set) var knownIDs: Set<String>
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -52,6 +61,7 @@ final class ProviderEnablementStore {
             self.enabledIDs = nil
             self.disabledIDs = Set(defaults.stringArray(forKey: Self.disabledStorageKey) ?? [])
         }
+        self.knownIDs = Set(defaults.stringArray(forKey: Self.knownStorageKey) ?? [])
     }
 
     func isEnabled(_ id: String) -> Bool {
@@ -86,6 +96,17 @@ final class ProviderEnablementStore {
     /// fresh installs only — first synchronously with the fallback set, then again with the detected
     /// set. Fires `onProviderEnabled` for each newly-on provider and posts the change notification, so
     /// the refresh loop fetches them promptly.
+    /// Records `ids` as seen and returns the ones that were new. Pure bookkeeping: no enablement
+    /// change, no notification — `NewProviderSeeder` decides separately what to do with the new ones.
+    @discardableResult
+    func registerKnownProviders(_ ids: Set<String>) -> Set<String> {
+        let new = ids.subtracting(knownIDs)
+        guard !new.isEmpty else { return [] }
+        knownIDs.formUnion(new)
+        defaults.set(Array(knownIDs), forKey: Self.knownStorageKey)
+        return new
+    }
+
     func seedEnabledProviders(_ ids: Set<String>) {
         let newlyEnabled = ids.filter { !isEnabled($0) }
         let changed = enabledIDs != ids

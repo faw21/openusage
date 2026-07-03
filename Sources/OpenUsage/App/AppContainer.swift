@@ -35,6 +35,9 @@ final class AppContainer {
     private let refreshTask: Task<Void, Never>
     /// The fresh-install credential-detection pass (see `FirstRunSeeder`); `nil` on every later launch.
     private let seedTask: Task<Void, Never>?
+    /// The new-provider credential-detection pass (see `NewProviderSeeder`); `nil` unless this launch is
+    /// the first with a provider the install has never seen.
+    private let newProviderTask: Task<Void, Never>?
 
     /// `isFreshInstall` must be captured by the caller BEFORE `SettingsMigrator.migrate()` runs (the
     /// migrator's schema stamp makes the defaults domain non-empty). See `AppDelegate`.
@@ -86,6 +89,13 @@ final class AppContainer {
             providers: providers,
             enablement: enablement,
             onboarding: onboarding
+        )
+        // Providers added by an update get the same credential detection on their first launch — enabled
+        // only when the user actually has the tool. Runs every launch; a no-op unless the registry has a
+        // provider this install has never seen (fresh installs were just baselined by FirstRunSeeder).
+        self.newProviderTask = NewProviderSeeder.reconcileIfNeeded(
+            providers: providers,
+            enablement: enablement
         )
         self.onboarding = onboarding
         self.registry = registry
@@ -143,6 +153,7 @@ final class AppContainer {
     deinit {
         refreshTask.cancel()
         seedTask?.cancel()
+        newProviderTask?.cancel()
     }
 
     /// Drives live updates: refresh on launch, then again every refresh interval. Each pass honors the

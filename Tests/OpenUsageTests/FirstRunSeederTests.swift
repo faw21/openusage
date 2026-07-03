@@ -24,6 +24,9 @@ final class FirstRunSeederTests: XCTestCase {
         // Before the probe finishes: the fallback set, synchronously — never a flash of all providers.
         XCTAssertEqual(enablement.enabledIDs, ["claude", "codex", "cursor"])
         XCTAssertTrue(onboarding.isCustomizeHintPending)
+        // Every provider shipping today is baselined as "seen", so `NewProviderSeeder` only ever
+        // probes providers added in a later release.
+        XCTAssertEqual(enablement.knownIDs, ["claude", "codex", "cursor", "grok"])
 
         await task?.value
         XCTAssertEqual(enablement.enabledIDs, ["claude", "grok"])

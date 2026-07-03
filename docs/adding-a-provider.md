@@ -17,8 +17,11 @@ OpenUsage reads those existing credentials.
 
 Besides `refresh()`, every provider implements `hasLocalCredentials()` — a cheap, local-only check
 (files, keychain; never the network) for whether those credentials exist at all. A fresh install probes
-it once to turn on exactly the providers the user actually has (see `FirstRunSeeder`). Mirror the same
-credential sources `refresh()` reads, and run blocking loads via `loadOffMainActor`.
+it once to turn on exactly the providers the user actually has (see `FirstRunSeeder`), and existing
+installs probe it once on the first launch after your provider ships (see `NewProviderSeeder`) — so
+implementing it correctly is what gets the new provider auto-enabled for the users who actually have
+the tool (see [Which Providers Are On](provider-enablement.md)). Mirror the same credential sources
+`refresh()` reads, and run blocking loads via `loadOffMainActor`.
 
 ## The metric contract
 
