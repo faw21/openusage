@@ -27,6 +27,8 @@ struct ModelUsageDetail: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
         }
         .padding(14)
         .frame(width: Self.width)
