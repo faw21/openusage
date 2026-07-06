@@ -305,12 +305,20 @@ final class LayoutStore {
     }
 
     /// Whether any enabled provider ships the local spend tiles — the capability gate for the
-    /// Total Spend card. Keyed off the descriptor registry (`<provider>.today`, see
-    /// `WidgetDescriptor.spendTiles`), not off refreshed data, so the card can show its "No spend
-    /// data" state on a fresh morning instead of vanishing; and independent of whether the user
-    /// keeps the spend rows themselves visible.
+    /// Total Spend card. Keyed off the registry's descriptors, not off refreshed data, so the card
+    /// can show its "No spend data" state on a fresh morning instead of vanishing.
     var hasSpendCapableProvider: Bool {
-        registry.descriptors.contains { $0.id.hasSuffix(".today") && isProviderEnabled($0.providerID) }
+        !spendCapableProviders.isEmpty
+    }
+
+    /// Enabled providers that ship the local spend tiles (`WidgetDescriptor.spendTiles`), in the
+    /// user's provider order — the exact set the Total Spend card aggregates. Deliberately *not*
+    /// `displayGroups`: a provider whose every metric is hidden in Customize still spends money and
+    /// must still count, and look-alike dollar rows from other providers (OpenRouter's API-spend
+    /// "Today") must not.
+    var spendCapableProviders: [Provider] {
+        let capableIDs = Set(registry.descriptors.filter(\.isSpendTile).map(\.providerID))
+        return orderedProviders().filter { capableIDs.contains($0.id) && isProviderEnabled($0.id) }
     }
 
     // MARK: - Provider grouping

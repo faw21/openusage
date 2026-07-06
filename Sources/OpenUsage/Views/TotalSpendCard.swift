@@ -29,9 +29,11 @@ struct TotalSpendCard: View {
         TotalSpendPeriod(rawValue: periodRawValue) ?? .today
     }
 
-    /// Enabled providers in the user's display order — the same set and order the dashboard sections use.
+    /// The spend-tile providers the card may aggregate — capability-based (see
+    /// `LayoutStore.spendCapableProviders`), so a provider stays counted even when its own rows are
+    /// hidden in Customize, and providers with merely similar-looking dollar rows never leak in.
     private var providers: [Provider] {
-        layout.displayGroups.map(\.provider)
+        layout.spendCapableProviders
     }
 
     private var total: TotalSpend {

@@ -485,6 +485,15 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var widgetContent: some View {
+        // The cross-provider Total Spend ring tops the provider sections whenever the user hasn't
+        // hidden it (Settings → General) and any enabled provider is capable of tracking spend.
+        // The gate is capability, not data — and independent of the provider sections below, so a
+        // fresh morning, a lone provider, or a dashboard with every metric hidden still shows the
+        // card (with its ring or "No spend data" state) rather than silently dropping it.
+        if showTotalSpend, layout.hasSpendCapableProvider {
+            TotalSpendCard()
+                .padding(.bottom, density.sectionSpacing)
+        }
         if layout.displayGroups.isEmpty {
             Text("Turn on Customize to choose what to show.")
                 .font(.subheadline)
@@ -494,14 +503,6 @@ struct DashboardView: View {
                 .padding(.vertical, 24)
                 .padding(.horizontal, 16)
         } else {
-            // The cross-provider Total Spend ring tops the provider sections whenever the user hasn't
-            // hidden it (Settings → General) and any enabled provider is capable of tracking spend.
-            // The gate is capability, not data: a fresh morning or a lone provider shows the card
-            // with its ring or "No spend data" state rather than silently vanishing.
-            if showTotalSpend, layout.hasSpendCapableProvider {
-                TotalSpendCard()
-                    .padding(.bottom, density.sectionSpacing)
-            }
             WidgetGroupedListView(
                 reorderSpaceName: Self.reorderSpace,
                 reorderLift: $reorderLift
