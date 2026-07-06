@@ -353,7 +353,11 @@ private final class TooltipPresenter {
     private func origin(for size: CGSize, anchor: NSRect) -> NSPoint {
         var x = anchor.midX - size.width / 2
         var y = anchor.maxY + anchorGap
-        let screen = NSScreen.screens.first { $0.frame.intersects(anchor) } ?? NSScreen.main
+        // The `contains` leg matters for the cursor fallback's zero-size anchor: an empty rect
+        // intersects nothing, so without it clamping would fall back to `NSScreen.main` instead of
+        // the screen under the cursor.
+        let screen = NSScreen.screens.first { $0.frame.intersects(anchor) || $0.frame.contains(anchor.origin) }
+            ?? NSScreen.main
         if let visible = screen?.visibleFrame {
             // Clamp leading edge into the visible frame. The `min` keeps the trailing edge in, the outer
             // `max` keeps the leading edge in even when the bubble is wider than the screen (it would
