@@ -35,6 +35,9 @@ struct ShareCardView: View {
         .frame(width: Self.width, alignment: .topLeading)
         .background(Theme.traySurface)
         .environment(\.colorScheme, appearance)
+        // ImageRenderer can't draw the tooltips' AppKit anchor views — without this, each row's
+        // tooltip anchor rasterizes as a yellow placeholder box over the exported card.
+        .environment(\.hoverTooltipsDisabled, true)
     }
 
     // MARK: - Header

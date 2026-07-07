@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.7.4-beta.2
+
+### Bug Fixes
+- Disable hover tooltips in share-card renders by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.4-beta.1...v0.7.4-beta.2](https://github.com/robinebers/openusage/compare/v0.7.4-beta.1...v0.7.4-beta.2)
+
+- [141bf53](https://github.com/robinebers/openusage/commit/141bf5311fd3c528e61606c6fe9641f8173f7957) fix(share): disable hover tooltips in share-card renders by @robinebers
+
+## v0.7.4-beta.1
+
+### New Features
+- Cross-provider Total Spend ring card with morphing sectors, provider brand colors, a settings toggle, and capability gating ([#13120](https://github.com/robinebers/openusage/pull/13120)) by @robinebers
+
+### Bug Fixes
+- Never drop an enablement wake posted mid refresh pass; probe credentials concurrently by @robinebers
+- Anchor tooltips to the hovered item, balance wrapped lines, and use the cursor’s screen for zero-size anchor fallback by @robinebers
+- Scope Total Spend to providers with real spend tiles; show the card even when the dashboard is empty by @robinebers
+- Derive the Total Spend info tooltip from enabled spend-capable providers by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.3...v0.7.4-beta.1](https://github.com/robinebers/openusage/compare/v0.7.3...v0.7.4-beta.1)
+
+- [1d24835](https://github.com/robinebers/openusage/commit/1d2483503fc5c445eb93c959a61e88d5235567fb) fix: derive Total Spend info tooltip from enabled spend-capable providers by @robinebers
+- [a00f786](https://github.com/robinebers/openusage/commit/a00f786c8b8417e998755ea535a85a64b325523d) fix(tooltip): pick the cursor's screen for the zero-size anchor fallback by @robinebers
+- [c95f7c8](https://github.com/robinebers/openusage/commit/c95f7c895741af280793de7d5af1e9250cb73c6d) fix(dashboard): scope Total Spend to real spend-tile providers, show card with empty dashboard by @robinebers
+- [97dec12](https://github.com/robinebers/openusage/commit/97dec12a2ea4c61bf5b5642cef52468705353775) fix(tooltip): anchor bubble to the hovered item and balance wrapped lines by @robinebers
+- [c56d8d1](https://github.com/robinebers/openusage/commit/c56d8d17e821d0dad6fc7fbf3c188dd6333766cb) feat(dashboard): morphing ring sectors, brand colors, settings toggle, capability gating by @robinebers
+- [53115a8](https://github.com/robinebers/openusage/commit/53115a8275b9e95935277863a8da2693eb99f1a7) Revert "feat(dashboard): stacked-bars variant of the Total Spend card" by @robinebers
+- [684ccdc](https://github.com/robinebers/openusage/commit/684ccdc9a087c9a55dc3dccfd00247b5106f0bd6) feat(dashboard): stacked-bars variant of the Total Spend card by @robinebers
+- [8251ac3](https://github.com/robinebers/openusage/commit/8251ac3d3e7c9296ba245a94ee5e6560139e8d29) feat(dashboard): cross-provider Total Spend ring card by @robinebers
+- [2a225eb](https://github.com/robinebers/openusage/commit/2a225ebba05f599fc5b8cdc2708b76ff78868856) fix(refresh): never lose an enablement wake posted mid-pass; probe credentials concurrently by @robinebers
+
 ## v0.7.3
 
 ### New Features

@@ -14,6 +14,10 @@ When you expand a card, the tucked-away metrics open below the caret as a single
 
 A provider card can also show **quick-link buttons** pinned at the bottom of its expanded section — Status, Console, Dashboard, and the like — that open the provider's own pages in your default browser. They're part of the expander, so collapsing the caret hides them along with the tucked-away metrics. Buttons lay out up to three across, wrapping to a second row when there are more.
 
+## Total Spend
+
+When any enabled provider tracks daily spend (Claude, Codex, Cursor, or Grok), a **Total Spend** card sits above the provider sections. It shows a ring chart where each colored segment is one provider's share of the combined spend, the total in the center, and a ranked legend beside it (biggest spender first). A capsule switcher flips between **Today**, **Yesterday**, and **30 Days**; the choice sticks across restarts. Each provider keeps a fixed color drawn from its brand (Claude's terracotta, OpenAI's green, and so on), and even a tiny spender keeps a visible sliver of the ring. Providers with no usage for the selected period simply don't appear — they're never counted as $0. (An enabled provider counts even if you've hidden its own spend rows in Customize; other dollar rows, like OpenRouter's API spend, never mix in.) Hover the center total for the exact figure (and a note when any contributor's number is a local estimate). The header's share icon (or right-clicking the card) copies a branded PNG of the ring to your clipboard, just like sharing a provider card. The header also carries a small ⓘ naming the providers that feed the total. A period with no priced usage anywhere (say, a morning before the first request) shows a quiet "No spend data" state instead of hiding the card. Don't want the card at all? Turn it off with **Show Total Spend** at the top of [Settings](settings.md).
+
 ## Rows
 
 **Metrics with a limit** (session, weekly, credits with a cap) show a progress bar with:

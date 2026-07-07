@@ -12,7 +12,7 @@ enum ShareCardRenderer {
 
     /// The card rendered to an `NSImage`, or `nil` if `ImageRenderer` produces no CGImage. The image's
     /// point size is the card's natural (flexible) size; its pixel size is that times `scale`.
-    static func image(for view: ShareCardView) -> NSImage? {
+    static func image<Card: View>(for view: Card) -> NSImage? {
         let renderer = ImageRenderer(content: view)
         renderer.scale = scale
         guard let cgImage = renderer.cgImage else { return nil }
@@ -105,5 +105,42 @@ enum ShareCardRenderer {
         // a failed encode or a pasteboard rejection must not read as success.
         guard copyToPasteboard(image) else { return }
         layout.presentShareConfirmation()
+    }
+
+    /// The Total Spend counterpart to `share(group:…)`: renders the aggregate ring card for the
+    /// currently selected period and copies the PNG to the clipboard, with the same pinned-density
+    /// render and the same "Copied to clipboard" confirmation. `total` is passed already aggregated —
+    /// the card computed it for the on-screen ring, so the export can't drift from the display.
+    /// Returns whether the PNG landed on the pasteboard, so the share button can gate its own
+    /// "copied" micro-animation on actual success.
+    @discardableResult
+    static func shareTotalSpend(
+        total: TotalSpend,
+        appearance: ColorScheme,
+        layout: LayoutStore
+    ) -> Bool {
+        guard !total.isEmpty else {
+            NSSound.beep()
+            return false
+        }
+        let view = TotalSpendShareCardView(total: total, appearance: appearance)
+        let densityKey = DensitySetting.key
+        let savedDensity = UserDefaults.standard.string(forKey: densityKey)
+        UserDefaults.standard.set(DensitySetting.regular.rawValue, forKey: densityKey)
+        defer {
+            if let savedDensity {
+                UserDefaults.standard.set(savedDensity, forKey: densityKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: densityKey)
+            }
+        }
+        guard let image = image(for: view) else {
+            AppLog.error(.lifecycle, "share card: ImageRenderer produced no image for total spend")
+            NSSound.beep()
+            return false
+        }
+        guard copyToPasteboard(image) else { return false }
+        layout.presentShareConfirmation()
+        return true
     }
 }
