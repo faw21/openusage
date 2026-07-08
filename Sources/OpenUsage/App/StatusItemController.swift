@@ -45,11 +45,11 @@ final class StatusItemController: NSObject {
     /// Token for the appearance-change observer; held to follow the documented removal pattern.
     private var appearanceObserver: NSObjectProtocol?
     /// Panel top-left in screen coords, captured on show. The panel grows downward from here, so the
-    /// top edge stays pinned just under the status-item button as the user resizes it.
+    /// top edge stays pinned just under the status-item button as its content changes height.
     private var anchorTopLeft: NSPoint?
 
     /// One width across both densities (matches `DashboardView.popoverWidth`). The panel is a single
-    /// column of metrics, so width is fixed; only height is user-resizable.
+    /// column of metrics, so width is fixed and height follows the content.
     private static let panelWidth: CGFloat = 320
     /// Gap between the menu bar and the panel's top edge.
     private static let topGap: CGFloat = 4
@@ -59,7 +59,7 @@ final class StatusItemController: NSObject {
     /// auto-fit morph can shrink the panel to match its content instead of showing blank space when
     /// only one or two providers are enabled (#800).
     private static let minPanelHeight: CGFloat = 200
-    /// Opening height before the user has ever resized the panel.
+    /// Opening height before a measured or remembered screen height is available.
     private static let defaultPanelHeight: CGFloat = 800
     /// True while a SwiftUI-driven height morph is in flight. Outside-click dismissal is suspended for
     /// its duration so the panel growing/shrinking under a stationary cursor can't be misread as an
@@ -91,9 +91,8 @@ final class StatusItemController: NSObject {
                     .environment(updater)
             )
         )
-        // The panel is a fixed, user-resizable size — NOT content-sized. The host view fills the
-        // window (its autoresizing mask) and the content scrolls, so switching screens never resizes
-        // the window. That's what removes the resize stutter: the only resize is the user's own drag.
+        // The host view fills the panel. SwiftUI measures each screen and drives the panel height;
+        // content scrolls only when that height reaches the available-screen limit.
         self.hostingController = hosting
 
         self.panel = MenuBarPanel(
@@ -176,9 +175,8 @@ final class StatusItemController: NSObject {
         let host = hostingController.view
         host.translatesAutoresizingMaskIntoConstraints = false
         host.wantsLayer = true
-        // Redraw the SwiftUI content on every step of a live resize instead of stretching the layer's
-        // cached contents (the default `.onSetNeedsDisplay`), which is what made the cards jitter while
-        // dragging the bottom edge.
+        // Redraw the SwiftUI content on every step of a height change instead of stretching the layer's
+        // cached contents (the default `.onSetNeedsDisplay`), which keeps cards steady during a morph.
         host.layerContentsRedrawPolicy = .duringViewResize
         host.layer?.cornerRadius = Self.cornerRadius
         host.layer?.cornerCurve = .continuous
@@ -367,8 +365,8 @@ final class StatusItemController: NSObject {
         // Persist the closing screen's height NOW, while `container.layout.screen` is still the screen
         // being shown (the visibility reset that flips it back to dashboard runs later, off the occlusion
         // notification). `scheduleMorphSettle` only persists after 120ms of quiet and bails once the panel
-        // is hidden, so without this a close right after a resize/screen-switch would never save the new
-        // height and the next open of that screen would use a stale flash-free guess.
+        // is hidden, so without this a close during a height change or screen switch would never save
+        // the new height and the next open of that screen would use a stale flash-free guess.
         if panel.isVisible {
             PanelHeightStore.save(panel.frame.height, for: container.layout.screen)
         }

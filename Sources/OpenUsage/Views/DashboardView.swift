@@ -77,8 +77,7 @@ struct DashboardView: View {
             // popover reads as one solid panel; under Increase Transparency / the egg it clears so the
             // behind-window backdrop (or party gradient) shows through. Outermost so the footer, header,
             // and scroll content all sit on it; separation from the footer comes from the native soft
-            // scroll-edge fade (not a distinct bar). The resize handle is folded into the footer (see
-            // `footerBar`), so there's no separate root-level dragger inset anymore.
+            // scroll-edge fade (not a distinct bar).
             .background(PopoverSurface())
             // Drive the host panel's height on SwiftUI's clock. At the body root, OUTSIDE `modeBody`'s
             // `.animation(nil, value: layout.screenSlideID)`, so the height rides the active spring (the
@@ -329,9 +328,9 @@ struct DashboardView: View {
         return fromOffset + progress * (toOffset - fromOffset)
     }
 
-    /// Builds one screen: its scroll body wrapped in the fixed chrome. The chrome (top bar + footer
-    /// with the folded-in resize handle) is keyed off `layout.screen` — the *destination* — not the
-    /// per-page `screen`, so during a switch both mounted pages render identical chrome pinned to the
+    /// Builds one screen: its scroll body wrapped in the fixed chrome. The chrome (top bar + footer)
+    /// is keyed off `layout.screen` — the *destination* — not the per-page `screen`, so during a switch
+    /// both mounted pages render identical chrome pinned to the
     /// same edges. The chrome therefore stays put while only the content offsets beneath it (the
     /// "one fixed footer / top bar doesn't slide" behaviour). The soft scroll-edge styles and the
     /// pinned bars attach to each page's scroll view (`PopoverScrollView`), the documented place for
@@ -577,9 +576,8 @@ struct DashboardView: View {
     // MARK: - Pinned footer
 
     /// The bottom chrome as one unit: the footer row — app identity + live refresh countdown (or the
-    /// Customize pin summary) plus the glass Customize/Settings buttons — with the resize handle folded
-    /// directly beneath it. Pinned via `pinnedFooter` (`safeAreaBar` on macOS 26; `safeAreaInset` on
-    /// macOS 15).
+    /// Customize pin summary) plus the glass Customize/Settings buttons. Pinned via `pinnedFooter`
+    /// (`safeAreaBar` on macOS 26; `safeAreaInset` on macOS 15).
     ///
     /// Its background is `barGlass()` — content-aware Liquid Glass (`glassEffect`) that lenses the
     /// in-app data scrolling beneath it, so the footer reads as real glass over the content (and stays

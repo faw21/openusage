@@ -41,8 +41,8 @@ struct WidgetData: Hashable {
     /// state when none are available) and lights up like the spend rows — so it stays reachable even
     /// at "0 available", where `expiriesAt` is empty. Off for every other row.
     var showsResetExpiries: Bool = false
-    /// Names of models this period's spend used that the pricing manifest can't price. Their tokens are
-    /// counted but their cost is incomplete, so the period's dollar figure can be understated.
+    /// Names of models this period's spend used that the pricing sources can't price. Their usage is
+    /// left out of the displayed total, so the period's figures can be understated.
     /// Drives the label warning triangle and its hover list. Empty for every other row.
     var unknownModels: [String] = []
     /// Period-scoped model spend/tokens for the Today / Yesterday / Last 30 Days hover popover. Nil for
@@ -58,7 +58,7 @@ struct WidgetData: Hashable {
     /// Optional source/disclaimer note for locally-estimated tiles. Rendered on the value-side hover,
     /// not beside the left label, so labels stay inert.
     var infoNote: String?
-    /// Optional source note for non-estimated value rows such as Cursor spend history.
+    /// Optional source note for value rows such as Cursor spend history.
     var valueTooltipNote: String?
     /// Descriptor opt-in: render the provider's `.text` line verbatim as the row's right-aligned detail
     /// (e.g. Codex Credits "$32.84 · 821 credits") instead of reformatting it as "<value> <word>". The

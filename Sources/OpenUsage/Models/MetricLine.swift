@@ -91,9 +91,9 @@ enum MetricLine: Hashable, Sendable, Codable {
     /// on hover). Carried as raw `Date`s (not baked strings) so they count down on the popover's clock
     /// tick and honor the global relative/absolute reset mode, like a bounded row's reset countdown.
     ///
-    /// `unknownModels` carries the names of models this period's spend used that the bundled pricing
-    /// manifest doesn't know. Their tokens are counted but their cost is incomplete, so the row shows a
-    /// warning triangle listing them on hover. `modelBreakdown` carries the period-scoped ranked model
+    /// `unknownModels` carries the names of models this period's spend used that the pricing sources
+    /// don't know. Their usage is left out of the displayed total, so the row shows a warning triangle
+    /// listing them on hover. `modelBreakdown` carries the period-scoped ranked model
     /// list for spend rows; it is internal UI data, not part of the local HTTP API wire shape.
     case values(
         label: String,
@@ -262,4 +262,3 @@ enum MetricLine: Hashable, Sendable, Codable {
         }
     }
 }
-
