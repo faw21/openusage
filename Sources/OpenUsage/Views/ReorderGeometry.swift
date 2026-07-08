@@ -79,7 +79,7 @@ struct ReorderLiftPreview: View {
             ProviderSectionHeader(provider: provider, plan: plan, showsDragHandle: true)
                 .padding(.horizontal, 8)
 
-            DashboardMetricCard(lifted: true) {
+            DashboardMetricCard {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     WidgetRowView(data: row)
                 }
