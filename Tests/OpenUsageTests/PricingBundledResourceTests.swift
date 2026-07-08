@@ -48,7 +48,13 @@ final class PricingBundledResourceTests: XCTestCase {
         XCTAssertEqual(pricing.resolve(model: "gpt-5.6-luna")?.inputPerMillion, 1)
         XCTAssertEqual(pricing.resolve(model: "gpt-5.6-luna-fast")?.inputPerMillion, 2.5)
         XCTAssertEqual(pricing.resolve(model: "grok-4-20-thinking")?.inputPerMillion, 2)
+        XCTAssertEqual(pricing.resolve(model: "grok-4.5")?.inputPerMillion, 2)
+        XCTAssertEqual(pricing.resolve(model: "grok-4.5-high-fast")?.inputPerMillion, 4)
         XCTAssertEqual(pricing.resolve(model: "kimi-k2p5")?.inputPerMillion, 0.6)
+        XCTAssertEqual(pricing.resolve(model: "kimi-k2.7-code")?.inputPerMillion, 0.95)
+        XCTAssertEqual(pricing.resolve(model: "kimi-k2p7")?.inputPerMillion, 0.95)
+        XCTAssertEqual(pricing.resolve(model: "claude-4.7-opus-high-thinking")?.inputPerMillion, 5)
+        XCTAssertEqual(pricing.resolve(model: "claude-4.7-opus-max-thinking-fast")?.inputPerMillion, 30)
         XCTAssertEqual(pricing.resolve(model: "glm-5.2-max")?.inputPerMillion, 1.4)
         XCTAssertEqual(pricing.resolve(model: "github_bugbot")?.outputPerMillion, 30)
         XCTAssertEqual(pricing.resolve(model: "Premium (GPT-5.3-Codex)")?.inputPerMillion, 1.75)
@@ -165,6 +171,39 @@ final class PricingBundledResourceTests: XCTestCase {
         let pricing = Self.pricing
         XCTAssertEqual(pricing.resolve(model: "grok-build")?.inputPerMillion, 1)
         XCTAssertEqual(pricing.resolve(model: "grok-composer-2.5-fast")?.inputPerMillion, 3)
+    }
+
+    /// Grok 4.5 (Cursor + SpaceXAI first-party): standard and fast rates from Cursor docs, with
+    /// effort slugs collapsing to the same entries.
+    func testGrok45PricingAndAliases() throws {
+        let pricing = Self.pricing
+        let standard = try XCTUnwrap(pricing.resolve(model: "grok-4.5-high"))
+        XCTAssertEqual(standard.inputPerMillion, 2.0)
+        XCTAssertEqual(standard.cacheWritePerMillion, 2.0)
+        XCTAssertEqual(standard.cacheReadPerMillion, 0.5)
+        XCTAssertEqual(standard.outputPerMillion, 6.0)
+        XCTAssertEqual(pricing.resolve(model: "grok-4.5"), standard)
+        XCTAssertEqual(pricing.resolve(model: "grok-4.5-low"), standard)
+
+        let fast = try XCTUnwrap(pricing.resolve(model: "grok-4.5-fast"))
+        XCTAssertEqual(fast.inputPerMillion, 4.0)
+        XCTAssertEqual(fast.cacheWritePerMillion, 4.0)
+        XCTAssertEqual(fast.cacheReadPerMillion, 1.0)
+        XCTAssertEqual(fast.outputPerMillion, 18.0)
+        XCTAssertEqual(pricing.resolve(model: "grok-4.5-medium-fast"), fast)
+    }
+
+    /// Kimi K2.7 Code: Cursor's published rates override messy public-catalog entries.
+    func testKimiK27CodePricingAndAliases() throws {
+        let pricing = Self.pricing
+        let kimi = try XCTUnwrap(pricing.resolve(model: "kimi-k2.7-code"))
+        XCTAssertEqual(kimi.inputPerMillion, 0.95)
+        XCTAssertEqual(kimi.cacheWritePerMillion, 0.95)
+        XCTAssertEqual(kimi.cacheReadPerMillion, 0.19)
+        XCTAssertEqual(kimi.outputPerMillion, 4.0)
+        XCTAssertEqual(pricing.resolve(model: "kimi-k2.7"), kimi)
+        XCTAssertEqual(pricing.resolve(model: "kimi-k2p7"), kimi)
+        XCTAssertEqual(pricing.resolve(model: "kimi-k2p7-code"), kimi)
     }
 
     func testCostSumsAllBucketsAndUnpricedIsNil() throws {
