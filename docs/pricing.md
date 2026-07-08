@@ -22,7 +22,7 @@ A model no source can price is left out of the spend figures entirely — its to
 
 ## What the estimate includes
 
-Costs are computed per usage event from four token buckets — plain input, cache writes, cache reads, and output — at the model's per-million-token rates, including 1-hour cache-write pricing, the >200k-token long-context tiers where a provider has them, and fast-variant multipliers. When a Claude log line carries an explicit `costUSD`, that value is used as-is. The result is an estimate of API-rate value, not a bill: subscription plans don't charge per token.
+Costs are computed per usage event from four token buckets — plain input, cache writes, cache reads, and output — at the model's per-million-token rates, including 1-hour cache-write pricing, the >200k-token long-context tiers where a provider has them, and fast-variant multipliers. When one request's prompt passes 200k tokens, the higher rate applies to the whole request. Cursor's export combines many requests into each row, so OpenUsage uses the normal rate there rather than guessing that one request crossed the limit. When a Claude log line carries an explicit `costUSD`, that value is used as-is. The result is an estimate of API-rate value, not a bill: subscription plans don't charge per token.
 
 ## Privacy
 

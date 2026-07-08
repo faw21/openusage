@@ -48,10 +48,15 @@ final class ModelPricing: Sendable {
         resolve(model: model) != nil
     }
 
-    /// Dollar cost of `tokens` for `model`, or nil when the model can't be priced.
-    func estimatedCostDollars(model: String, tokens: TokenBreakdown) -> Double? {
+    /// Dollar cost of `tokens` for `model`, or nil when the model can't be priced. Aggregated sources
+    /// can disable long-context tiers when they do not preserve individual request boundaries.
+    func estimatedCostDollars(
+        model: String,
+        tokens: TokenBreakdown,
+        applyLongContextRates: Bool = true
+    ) -> Double? {
         guard let rates = resolve(model: model) else { return nil }
-        return rates.costDollars(for: tokens)
+        return rates.costDollars(for: tokens, applyLongContextRates: applyLongContextRates)
     }
 
     private func resolveUncached(model: String) -> ModelRates? {

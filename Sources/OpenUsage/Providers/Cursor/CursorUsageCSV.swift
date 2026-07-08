@@ -61,7 +61,11 @@ enum CursorUsageCSV {
                 date: date,
                 model: model,
                 tokens: tokens,
-                imputedCostDollars: pricing.estimatedCostDollars(model: model, tokens: tokens)
+                imputedCostDollars: pricing.estimatedCostDollars(
+                    model: model,
+                    tokens: tokens,
+                    applyLongContextRates: false
+                )
             ))
         }
         return rows

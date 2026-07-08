@@ -48,6 +48,31 @@ final class CursorCSVParserTests: XCTestCase {
         XCTAssertEqual(rows[1].tokens.totalTokens, 100)
         XCTAssertNil(rows[1].imputedCostDollars)
     }
+
+    func testUsageCSVDoesNotTreatAggregatedRowsAsSingleLongContextRequests() throws {
+        var rates = ModelRates(
+            inputPerMillion: 3,
+            outputPerMillion: 15,
+            cacheWritePerMillion: 3.75,
+            cacheReadPerMillion: 0.3
+        )
+        rates.inputAbove200kPerMillion = 6
+        rates.outputAbove200kPerMillion = 22.5
+        let pricing = ModelPricing(
+            supplement: PricingSupplement(),
+            primary: PricingCatalog(entries: ["test-model": rates]),
+            secondary: PricingCatalog()
+        )
+        let csv = """
+        Date,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Cost
+        2026-01-01T00:00:00Z,test-model,No,0,300000,0,100000,Included
+        """
+
+        let row = try XCTUnwrap(CursorUsageCSV.parse(csv: csv, pricing: pricing).first)
+
+        // A CSV row combines many requests, so its total cannot prove that any one request crossed 200k.
+        XCTAssertEqual(row.imputedCostDollars!, 2.4, accuracy: 0.0001)
+    }
 }
 
 // MARK: - Range aggregation
