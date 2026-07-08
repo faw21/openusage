@@ -263,6 +263,16 @@ struct WidgetRowView: View {
             .onDisappear { modelHover.dismiss() }
     }
 
+    /// The value column reveals the model breakdown on hover, so it lights up under the pointer the way
+    /// a Finder / System Settings list row does — the native cue that "this is a target." Lit the moment
+    /// the pointer arrives (`overInline`, before the reveal dwell) and held lit while the popover is open,
+    /// so the value reads as the popover's source. Both flags live on `modelHover`, so the panel's close
+    /// path (`dismissAll`) clears the highlight even though this view's state survives `orderOut`. Only
+    /// rows that actually have a breakdown light up.
+    private var showValueHighlight: Bool {
+        data.hasModelBreakdown && (modelHover.overInline || modelHover.isPresented)
+    }
+
     private var unboundedRowContent: some View {
         HStack(alignment: .center, spacing: 10) {
             labelColumn
@@ -295,6 +305,19 @@ struct WidgetRowView: View {
                 }
             }
             .multilineTextAlignment(.trailing)
+            // A quaternary chip behind the value — the app's subtle-fill token, in the shared 6pt
+            // continuous corner — signals the value is interactive before the breakdown even opens.
+            // Negative-inset so it hugs the figure without changing the row's height (the text-row
+            // rhythm that clusters Today / Yesterday / Last 30 Days must not shift), and a quick
+            // opacity fade in/out matches macOS hover states.
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(.quaternary)
+                    .padding(.horizontal, -7)
+                    .padding(.vertical, -4)
+                    .opacity(showValueHighlight ? 1 : 0)
+            }
+            .animation(.easeOut(duration: 0.12), value: showValueHighlight)
             // Both the hover trigger and the popover anchor live on the value column, not the whole
             // row: hovering the label (or empty gap) shouldn't reveal the breakdown — only the figure
             // it explains should — and the arrow then centers on that figure, matching the trend
