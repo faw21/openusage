@@ -105,10 +105,6 @@ extension ZAIProvider: APIKeyManaging {
     func currentAPIKey() -> String? { authStore.currentAPIKey() }
     func saveAPIKey(_ key: String) throws { try authStore.saveAPIKey(key) }
     func deleteAPIKey() throws { try authStore.deleteAPIKey() }
-    /// Where the in-app editor writes — the primary config file the auth store reads first.
-    var apiKeyStorageDescription: String { ZAIAuthStore.configPaths[0] }
-    /// The env var shown in the "Using ZAI_API_KEY from your environment" line.
-    var apiKeyEnvironmentName: String { ZAIAuthStore.environmentNames[0] }
 }
 
 private enum QuotaResult {

@@ -23,8 +23,8 @@ enum APIKeyStatus: Sendable, Equatable {
 /// A `ProviderRuntime` that needs a user-supplied API key (OpenRouter today; future user-key
 /// providers conform later). Settings ▸ API Keys lists conformers, renders each one's
 /// `apiKeyStatus`, and writes changes through `saveAPIKey` / `deleteAPIKey`. The provider delegates
-/// to its auth store, so the UI stays provider-agnostic and the storage path each provider already
-/// reads is the one the UI writes — no new storage infra.
+/// to its auth store, so the UI stays provider-agnostic and writes through the same storage layer
+/// that authentication already reads — no new storage infra.
 @MainActor
 protocol APIKeyManaging: ProviderRuntime {
     /// The live key status, computed from the environment + the saved config file.
@@ -38,8 +38,4 @@ protocol APIKeyManaging: ProviderRuntime {
     /// Remove the saved key. If an env key is present the status falls back to `fromEnvironment`;
     /// otherwise `notSet`.
     func deleteAPIKey() throws
-    /// User-facing description of where the key is stored, shown under the input ("Stored in …").
-    var apiKeyStorageDescription: String { get }
-    /// The env-var name checked, shown in the "Using OPENROUTER_API_KEY from your environment" line.
-    var apiKeyEnvironmentName: String { get }
 }

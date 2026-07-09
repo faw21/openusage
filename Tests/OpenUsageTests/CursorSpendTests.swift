@@ -281,13 +281,11 @@ final class CursorSpendRangeTests: XCTestCase {
 
 @MainActor
 final class CursorSpendProviderTests: XCTestCase {
-    func testSpendTrackingEnabledDownloadsCSVExposesSpendTilesAndFlagsUnknownModels() async {
-        // Spend tracking is back on (issue #758): the provider downloads the usage CSV, exposes the
-        // spend-tile + trend descriptors, and emits Today / Yesterday / Last 30 Days / Usage Trend lines
+    func testSpendTrackingDownloadsCSVExposesSpendTilesAndFlagsUnknownModels() async {
+        // The provider downloads the usage CSV, exposes the spend-tile + trend descriptors, and emits
+        // Today / Yesterday / Last 30 Days / Usage Trend lines
         // alongside the live quota meters. A row that used a model no pricing source can price carries
         // that model's name so the tile can warn its cost is incomplete.
-        XCTAssertTrue(CursorProvider.spendTrackingEnabled, "this regression guards the enabled state")
-
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let iso = ISO8601DateFormatter()
         let todayStr = iso.string(from: now)
@@ -336,7 +334,7 @@ final class CursorSpendProviderTests: XCTestCase {
         let snapshot = await provider.refresh()
 
         XCTAssertTrue(http.requests.contains { $0.url.absoluteString.contains("export-usage-events-csv") },
-                      "spend tracking is enabled — Cursor must download the usage CSV")
+                      "Cursor refresh must download the usage CSV for spend metrics")
         // Live quota meter survives; spend tiles + trend are present.
         XCTAssertTrue(snapshot.lines.contains { $0.label == "Total usage" })
         for label in ["Today", "Yesterday", "Last 30 Days", "Usage Trend"] {
@@ -360,9 +358,7 @@ final class CursorSpendProviderTests: XCTestCase {
 
     func testSpendTileRendersCombinedCostAndTokensWithValueTooltip() async {
         let cursor = CursorProvider()
-        // Spend tiles are gated off the live provider (issue #758), so source the descriptor from the
-        // shared factory — this keeps the combined "cost · tokens" render shape covered for re-enable.
-        let descriptor = try! XCTUnwrap(WidgetDescriptor.spendTiles(provider: cursor.provider).first { $0.id == "cursor.today" })
+        let descriptor = try! XCTUnwrap(cursor.widgetDescriptors.first { $0.id == "cursor.today" })
 
         // The combined tile joins the dollar and the labeled token count. The render shape for a zero
         // line is still "$0.00 · 0 tokens" — the mapper no longer produces these (an idle period is left
@@ -427,11 +423,9 @@ final class CursorSpendProviderTests: XCTestCase {
 // MARK: - Client request contract
 
 final class CursorUsageClientRequestTests: XCTestCase {
-    // The provider-level CSV integration tests were removed when spend tracking was disabled (issue
-    // #758), but `CursorUsageClient.fetchUsageCSV` is kept intact for re-enable. Pin its request contract
-    // directly at the client level — endpoint, epoch-ms range, `strategy=tokens`, the session cookie, and
-    // `Accept: text/csv` — so a silent regression in URL/header construction can't slip through while the
-    // feature is off (this test runs regardless of `CursorProvider.spendTrackingEnabled`).
+    // Pin the request contract directly at the client level — endpoint, epoch-ms range,
+    // `strategy=tokens`, the session cookie, and `Accept: text/csv` — so a silent regression in
+    // URL/header construction cannot slip through.
     func testFetchUsageCSVBuildsTokenStrategyRequestWithSessionCookie() async throws {
         let accessToken = makeCursorJWT(sub: "google-oauth2|user_abc123")
         let http = RoutingHTTPClient { _ in

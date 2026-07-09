@@ -29,30 +29,20 @@ final class CursorProvider: ProviderRuntime {
         self.pricing = pricing
     }
 
-    /// Cursor's usage-events CSV export (the source for the spend tiles + usage trend) had lagged real
-    /// time by ~12h+ in June 2026, so spend tracking was disabled for a stretch (issue #758). It is back
-    /// on: the spend tiles (Today / Yesterday / Last 30 Days) and the token trend are imputed from the CSV
-    /// via `CursorUsageCSV`, the shared `ModelPricingStore`, and `CursorUsageMapper.appendSpendLines`,
-    /// and the `cursor.today/yesterday/last30/trend` descriptors surface in the layout again. Usage from
-    /// a model no pricing source knows is left out, and the affected period carries the model name for
-    /// the warning triangle (see `appendSpendLines`).
-    static let spendTrackingEnabled = true
-
     var widgetDescriptors: [WidgetDescriptor] {
-        var descriptors: [WidgetDescriptor] = [
+        [
             .percent(id: "cursor.usage", provider: provider, title: "Total Usage", metricLabel: "Total usage"),
             .percent(id: "cursor.auto", provider: provider, title: "Auto Usage", metricLabel: "Auto usage"),
             .percent(id: "cursor.api", provider: provider, title: "API Usage", metricLabel: "API usage"),
             .boundedDollars(id: "cursor.onDemand", provider: provider, title: "Extra Usage", metricLabel: "On-demand", limit: 100, valueWord: "spent"),
             .boundedCount(id: "cursor.requests", provider: provider, title: "Requests", limit: 500,
                           suffix: "requests", periodDurationMs: CursorUsageMapper.billingPeriodMs),
-            .dollarBalance(id: "cursor.credits", provider: provider, title: "Credits", valueWord: "left")
-        ]
-        if Self.spendTrackingEnabled {
-            descriptors.append(.usageTrend(provider: provider))
-            descriptors.append(contentsOf: WidgetDescriptor.spendTiles(provider: provider))
-        }
-        return descriptors
+            .dollarBalance(id: "cursor.credits", provider: provider, title: "Credits", valueWord: "left"),
+            .usageTrend(provider: provider)
+        ] + WidgetDescriptor.spendTiles(
+            provider: provider,
+            valueTooltipNote: WidgetData.cursorUsageHistoryNote
+        )
     }
 
     func hasLocalCredentials() async -> Bool {
@@ -141,16 +131,13 @@ final class CursorProvider: ProviderRuntime {
             creditGrants: creditGrants,
             stripeBalanceCents: stripeBalanceCents
         )
-        if Self.spendTrackingEnabled {
-            await appendSpendLines(to: &mapped.lines, accessToken: currentToken)
-        }
+        await appendSpendLines(to: &mapped.lines, accessToken: currentToken)
         return snapshot(mapped)
     }
 
     /// Strictly additive: fetch the usage CSV and append the three per-day spend tiles. Any failure
     /// (no session, non-2xx, or undecodable body) appends nothing, so the live Cursor mapping is never
-    /// affected and the spend tiles fall back to "No data". Gated on `spendTrackingEnabled` (see there
-    /// for the on/off history).
+    /// affected and the spend tiles fall back to "No data".
     private func appendSpendLines(to lines: inout [MetricLine], accessToken: String) async {
         let calendar = Calendar.current
         let end = now()
