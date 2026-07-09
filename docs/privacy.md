@@ -20,6 +20,12 @@ It also reports **crashes**, so we can find and fix the bugs that make the app q
 - No error **messages** or file paths — only coarse error categories as counts.
 - Nothing while the toggle is off.
 
+## Credentials stored on this Mac
+
+OpenUsage primarily reads credentials that provider tools already keep on your Mac. When it writes a
+user-supplied API key or saves a refreshed credential, the file is replaced atomically and restricted to
+your macOS account (owner read and write only).
+
 ## Other network requests
 
 Besides the provider API calls the vendor's own tools would make, OpenUsage fetches public [model price lists](pricing.md) about once a day (from `raw.githubusercontent.com`, `models.dev`, and this project's GitHub Pages). These are plain downloads of public data — they carry no usage, log, or account information, and they run regardless of the Share Anonymous Usage setting. The spend tiles are computed from local CLI logs entirely on your Mac; no log data ever leaves it.
