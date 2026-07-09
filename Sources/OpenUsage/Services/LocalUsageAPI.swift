@@ -20,12 +20,25 @@ enum LocalUsageAPI {
     }
 
     static func respond(method: String, path: String, state: State) -> Response {
+        respond(method: method, path: path, state: state) { value in
+            try JSONEncoder().encode(value)
+        }
+    }
+
+    /// Encoding seam used by tests to prove failures stay inside the HTTP error contract. Production
+    /// uses the overload above, which always supplies Foundation's `JSONEncoder`.
+    static func respond(
+        method: String,
+        path: String,
+        state: State,
+        encodeJSON: (any Encodable) throws -> Data
+    ) -> Response {
         // Preflight support: OPTIONS anywhere is 204 + the CORS headers the server always sends.
         if method == "OPTIONS" {
             return Response(status: 204, body: nil)
         }
 
-        let segments = path.split(separator: "?", maxSplits: 1)[0]
+        let segments = path.prefix { $0 != "?" }
             .split(separator: "/")
             .map(String.init)
 
@@ -33,14 +46,14 @@ enum LocalUsageAPI {
         case (2, "v1", "usage"):
             guard method == "GET" else { return error(405, "method_not_allowed") }
             let snapshots = state.enabledOrderedIDs.compactMap { state.snapshots[$0] }
-            return Response(status: 200, body: encode(snapshots.map(WireSnapshot.init)))
+            return encodedResponse(snapshots.map(WireSnapshot.init), using: encodeJSON)
 
         case (3, "v1", "usage"):
             guard method == "GET" else { return error(405, "method_not_allowed") }
             let providerID = segments[2]
             guard state.knownIDs.contains(providerID) else { return error(404, "provider_not_found") }
             guard let snapshot = state.snapshots[providerID] else { return Response(status: 204, body: nil) }
-            return Response(status: 200, body: encode(WireSnapshot(snapshot)))
+            return encodedResponse(WireSnapshot(snapshot), using: encodeJSON)
 
         default:
             return error(404, "not_found")
@@ -53,8 +66,16 @@ enum LocalUsageAPI {
         Response(status: status, body: Data(#"{"error":"\#(code)"}"#.utf8))
     }
 
-    private static func encode(_ value: some Encodable) -> Data {
-        (try? JSONEncoder().encode(value)) ?? Data("[]".utf8)
+    private static func encodedResponse(
+        _ value: some Encodable,
+        using encodeJSON: (any Encodable) throws -> Data
+    ) -> Response {
+        do {
+            return Response(status: 200, body: try encodeJSON(value))
+        } catch let encodingError {
+            AppLog.error(.localAPI, "response encoding failed: \(encodingError.localizedDescription)")
+            return error(500, "encoding_failed")
+        }
     }
 
     // MARK: - Wire types (the documented public shape, distinct from the internal cache Codable)

@@ -122,6 +122,7 @@ final class LocalUsageServer {
         case 204: "No Content"
         case 404: "Not Found"
         case 405: "Method Not Allowed"
+        case 500: "Internal Server Error"
         case 503: "Service Unavailable"
         default: "OK"
         }

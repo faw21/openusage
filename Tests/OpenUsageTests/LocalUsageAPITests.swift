@@ -106,6 +106,53 @@ final class LocalUsageAPITests: XCTestCase {
         XCTAssertEqual(unknownRoute.status, 404)
         XCTAssertEqual((try json(unknownRoute.body) as? [String: Any])?["error"] as? String, "not_found")
     }
+
+    func testEmptyAndQueryOnlyPathsReturnNotFound() throws {
+        for path in ["", "?", "?source=test", "/?source=test"] {
+            let response = LocalUsageAPI.respond(method: "GET", path: path, state: makeState())
+
+            XCTAssertEqual(response.status, 404, path)
+            XCTAssertEqual(
+                (try json(response.body) as? [String: Any])?["error"] as? String,
+                "not_found",
+                path
+            )
+        }
+    }
+
+    func testQueryStringDoesNotChangeKnownRoute() throws {
+        let response = LocalUsageAPI.respond(
+            method: "GET",
+            path: "/v1/usage/claude?source=test",
+            state: makeState()
+        )
+
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual((try json(response.body) as? [String: Any])?["providerId"] as? String, "claude")
+    }
+
+    func testEncodingFailuresReturnInternalServerErrorObject() throws {
+        enum IntentionalEncodingFailure: Error { case expected }
+        let failEncoding: (any Encodable) throws -> Data = { _ in
+            throw IntentionalEncodingFailure.expected
+        }
+
+        for path in ["/v1/usage", "/v1/usage/claude"] {
+            let response = LocalUsageAPI.respond(
+                method: "GET",
+                path: path,
+                state: makeState(),
+                encodeJSON: failEncoding
+            )
+
+            XCTAssertEqual(response.status, 500, path)
+            XCTAssertEqual(
+                (try json(response.body) as? [String: Any])?["error"] as? String,
+                "encoding_failed",
+                path
+            )
+        }
+    }
 }
 
 final class LocalUsageServerRequestLineTests: XCTestCase {
@@ -128,5 +175,16 @@ final class LocalUsageServerRequestLineTests: XCTestCase {
         let (method, path) = LocalUsageServer.parseRequestLine("GET\r\n")
         XCTAssertEqual(method, "GET")
         XCTAssertEqual(path, "/")
+    }
+
+    func testMalformedRequestLinesRouteToNotFoundWithoutCrashing() {
+        let state = LocalUsageAPI.State(enabledOrderedIDs: [], knownIDs: [], snapshots: [:])
+
+        for head in ["", "GET\r\n", "GET ? HTTP/1.1\r\n", "not-http\r\n"] {
+            let request = LocalUsageServer.parseRequestLine(head)
+            let response = LocalUsageAPI.respond(method: request.method, path: request.path, state: state)
+
+            XCTAssertEqual(response.status, 404, head)
+        }
     }
 }

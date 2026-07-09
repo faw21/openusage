@@ -24,7 +24,7 @@ Returns the latest snapshot for one provider. Works for disabled providers too.
 
 ### Everything else
 
-Methods other than `GET`/`OPTIONS` return **405**; unknown routes return **404**. When the server is already handling its maximum of 16 concurrent connections, requests get **503** — back off and retry.
+Known routes reject methods other than `GET` with **405**; unknown routes return **404**. `OPTIONS` returns **204** on every route. A response serialization failure returns **500** instead of serving an invalid success body. When the server is already handling its maximum of 16 concurrent connections, requests get **503** — back off and retry.
 
 ## Response shape
 
@@ -83,7 +83,7 @@ The in-app model breakdown shown when hovering spend rows is not included in thi
 { "error": "provider_not_found" }
 ```
 
-Codes: `provider_not_found`, `not_found`, `method_not_allowed`, `server_busy`.
+Codes: `provider_not_found`, `not_found`, `method_not_allowed`, `encoding_failed`, `server_busy`.
 
 ## CORS and privacy
 
