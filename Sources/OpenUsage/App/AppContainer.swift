@@ -168,10 +168,10 @@ final class AppContainer {
         FirstRunSeeder.reseed(providers: providers, enablement: enablement)
     }
 
-    /// Drives live updates: refresh on launch, then again every refresh interval. Each pass honors the
-    /// cache, so it only hits the network once a snapshot has actually expired. `@Observable` propagates
-    /// the resulting snapshot changes to the menu-bar label and any open widgets, so the UI refreshes on
-    /// its own instead of only when the popover opens.
+    /// Sole owner of automatic updates: refresh on launch, then again every refresh interval. Each pass
+    /// honors the cache, so it only hits the network once a snapshot has actually expired. `@Observable`
+    /// propagates the resulting snapshot changes to the menu-bar label and any open widgets; mounting or
+    /// opening the popover never starts a competing refresh pass.
     ///
     /// Between passes the loop sleeps via `RefreshWakeSignal`, which wakes it early when the user
     /// enables/disables a provider so a newly-enabled provider is fetched promptly instead of waiting out
@@ -179,7 +179,8 @@ final class AppContainer {
     /// landing while a pass is still running (first-run credential detection, `NewProviderSeeder`, the
     /// Customize "Reset All" reseed — all of which typically finish faster than the network fetches) is
     /// never lost. Each pass still honors the cache (and the per-provider failure backoff), so an early
-    /// wake only hits the network for a provider whose snapshot has actually expired.
+    /// wake only hits the network for a provider whose snapshot has actually expired. The wake preserves
+    /// the existing timer deadline, preventing a cache-hit pass from postponing the next live refresh.
     ///
     /// The wake is deliberately scoped to `ProviderEnablementStore.didChangeNotification` — NOT the
     /// firehose `UserDefaults.didChangeNotification`, which fires for the app's own snapshot-cache writes,
@@ -189,18 +190,25 @@ final class AppContainer {
     private static func startPeriodicRefresh(dataStore: WidgetDataStore, telemetry: TelemetryRecorder) -> Task<Void, Never> {
         Task {
             let wakeSignal = RefreshWakeSignal()
-            while !Task.isCancelled {
-                await dataStore.refreshAll()
+            await PeriodicRefreshLoop.run(
+                interval: .seconds(RefreshSetting.interval),
+                refreshAll: { await dataStore.refreshAll() },
                 // Re-evaluate quota pace milestones every tick — after the refresh so it sees fresh data,
                 // and on every loop (not just on a fetch) so pace worsening from elapsed time alone still
                 // alerts even with the popover closed.
-                await dataStore.evaluateNotifications()
+                evaluateNotifications: { await dataStore.evaluateNotifications() },
                 // Day-rollover beat: emits `app_daily_active` once per local day and flushes any
                 // prior-day provider rollups. Runs on launch and every interval, so always-running
                 // instances still produce a daily-active signal.
-                telemetry.tick()
-                await wakeSignal.waitForWake(timeout: RefreshSetting.interval)
-            }
+                tickTelemetry: { telemetry.tick() },
+                // Publish the wall-clock counterpart of the loop's monotonic deadline for the footer.
+                // This callback runs only when the scheduler advances the cadence, never after an early
+                // enablement wake or a manual refresh.
+                didScheduleNextPass: {
+                    dataStore.nextAutomaticRefreshAt = Date().addingTimeInterval(RefreshSetting.interval)
+                },
+                waitForNextPass: { await wakeSignal.wait(timeout: $0) }
+            )
         }
     }
 }

@@ -47,10 +47,10 @@ final class WidgetDataStore {
 
     var snapshots: [String: ProviderSnapshot] = [:]
     var refreshingProviderIDs: Set<String> = []
-    /// Wall-clock time the most recent full refresh pass finished. Together with the chosen refresh
-    /// cadence it drives the dashboard footer's live "Next update in …" countdown, so the footer reflects
-    /// the real schedule instead of a hardcoded value. `nil` until the first pass completes.
-    var lastRefreshAt: Date?
+    /// Wall-clock deadline for the next automatic timer pass. `PeriodicRefreshLoop` updates it only when
+    /// that scheduler starts a new cadence interval, so manual refreshes and early provider-enablement
+    /// wakes cannot make the footer disagree with the timer. `nil` until the launch pass completes.
+    var nextAutomaticRefreshAt: Date?
     /// Latest refresh error per provider (e.g. "Not logged in. Run `codex` to authenticate."). Set when
     /// a refresh comes back as an error snapshot, cleared on the next successful one. The dashboard
     /// renders it as a warning indicator beside the provider name; the last good snapshot keeps
@@ -141,10 +141,6 @@ final class WidgetDataStore {
         for task in tasks {
             outcomes.append(await task.value)
         }
-        // Stamp the end of the pass so the footer countdown targets the next scheduled refresh
-        // (this time + one refresh interval), mirroring the periodic loop that sleeps one interval
-        // after each pass.
-        lastRefreshAt = Date()
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
         // Count THIS batch's actual outcomes, not the long-lived `providerErrors` map (which persists
         // across passes, so reading it would miscount cache hits and stale earlier failures).
@@ -222,8 +218,8 @@ final class WidgetDataStore {
         }
 
         guard let provider = providersByID[providerID] else { return .skipped }
-        // Skip if an in-flight refresh already owns this provider (e.g. the background timer racing the
-        // first popover open), so we never fire duplicate network calls for the same provider.
+        // Skip if an in-flight refresh already owns this provider (e.g. a manual refresh racing the
+        // background timer), so we never fire duplicate network calls for the same provider.
         guard !refreshingProviderIDs.contains(providerID) else {
             AppLog.debug(.refresh, "cache skip \(providerID) (already in flight)")
             return .skipped
@@ -503,4 +499,3 @@ final class WidgetDataStore {
         return Double(value[match].replacingOccurrences(of: ",", with: ""))
     }
 }
-

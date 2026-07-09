@@ -21,7 +21,6 @@ struct DashboardView: View {
     @Environment(WidgetDataStore.self) private var dataStore
     @Environment(PopoverTransparencyStore.self) private var transparency
     @Environment(UpdaterController.self) private var updater
-    @State private var didInitialRefresh = false
     @State private var reorderLift: ReorderLift?
     /// The panel height SwiftUI drives — the single animation clock. `PanelHeightModifier` follows it
     /// frame-by-frame onto the AppKit panel, so the window resize rides the same spring as the screen
@@ -218,11 +217,6 @@ struct DashboardView: View {
                 } else if !isSliding, abs(target - animatedHeight) > 1 {
                     withAnimation(Motion.spring) { animatedHeight = target }
                 }
-            }
-            .task {
-                guard !didInitialRefresh else { return }
-                didInitialRefresh = true
-                await dataStore.refreshAll()
             }
             // Watches for the secret transparency code while the panel is key and toggles the egg. A
             // sibling of `PopoverKeyReader` that only observes (never consumes), so it can't disturb

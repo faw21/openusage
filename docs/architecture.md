@@ -48,7 +48,9 @@ The UI reads from a few observable stores:
 - `ProviderEnablementStore` — which providers the user has turned on or off.
 
 Refresh runs on a timer in `AppContainer`; each pass respects the cache, so the network is only hit once a
-snapshot has actually expired.
+snapshot has actually expired. That loop is the sole owner of automatic refreshes: SwiftUI views observe
+the store, but mounting or opening the popover never starts another pass. Provider-enablement changes can
+wake the loop early without moving its regular timer deadline.
 
 ## The AppKit bridge
 

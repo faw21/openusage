@@ -14,12 +14,17 @@ import Foundation
 ///
 /// Here the subscription is installed once, synchronously, in `init` — before the loop's first pass —
 /// feeding an `AsyncStream` with `.bufferingNewest(1)`: a wake posted while nobody is waiting is
-/// retained, and a burst coalesces into a single pending wake, so the next `waitForWake` returns
-/// immediately instead of sleeping out the interval.
+/// retained, and a burst coalesces into a single pending wake, so the next `wait` returns immediately
+/// instead of sleeping out the interval.
 @MainActor
 final class RefreshWakeSignal {
-    private let stream: AsyncStream<Void>
-    private let continuation: AsyncStream<Void>.Continuation
+    enum Trigger: Equatable, Sendable {
+        case enablementChange
+        case timer
+    }
+
+    private let stream: AsyncStream<Trigger>
+    private let continuation: AsyncStream<Trigger>.Continuation
     private let center: NotificationCenter
     /// `nonisolated(unsafe)` so the nonisolated `deinit` can unregister the observer; it is immutable
     /// after `init`, and `NotificationCenter` is documented thread-safe.
@@ -29,14 +34,17 @@ final class RefreshWakeSignal {
         name: Notification.Name = ProviderEnablementStore.didChangeNotification,
         center: NotificationCenter = .default
     ) {
-        let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: Trigger.self,
+            bufferingPolicy: .bufferingNewest(1)
+        )
         self.stream = stream
         self.continuation = continuation
         self.center = center
         // Registered synchronously, so no notification posted after `init` returns can be missed.
         // The continuation is `Sendable`; yielding from whatever context posts is safe.
         self.observer = center.addObserver(forName: name, object: nil, queue: nil) { _ in
-            continuation.yield()
+            continuation.yield(.enablementChange)
         }
     }
 
@@ -45,22 +53,28 @@ final class RefreshWakeSignal {
         continuation.finish()
     }
 
-    /// Returns when a wake has been posted — including one buffered while the caller was doing other
-    /// work — or when `timeout` elapses, whichever comes first (the timer feeds the same stream). Also
-    /// returns promptly when the surrounding task is cancelled. If the timeout and a wake race, the
-    /// loser stays buffered; the resulting extra pass is all cache hits, so it stays harmless.
+    /// Returns what ended the wait: a provider-enablement change (including one buffered while the
+    /// caller was doing other work), or the scheduled timer. Returns `nil` when the surrounding task is
+    /// cancelled. Keeping the two triggers distinct lets the refresh loop preserve its existing timer
+    /// deadline across an early enablement pass instead of starting a fresh full interval.
+    ///
+    /// If the timer and a wake race, the loser stays buffered. The resulting extra pass is harmless
+    /// because provider cache checks still gate network work.
     ///
     /// The refresh loop is the signal's only consumer, and only ever sequentially: each call makes a
     /// fresh iterator over the shared stream (fine sequentially — the buffer lives on the stream), so
     /// no actor-isolated iterator state has to survive a suspension.
-    func waitForWake(timeout: TimeInterval) async {
+    func wait(timeout: Duration) async -> Trigger? {
         let timer = Task { [continuation] in
-            try? await Task.sleep(for: .seconds(timeout))
-            guard !Task.isCancelled else { return }
-            continuation.yield()
+            do {
+                try await Task.sleep(for: max(.zero, timeout))
+            } catch {
+                return
+            }
+            continuation.yield(.timer)
         }
         defer { timer.cancel() }
         var iterator = stream.makeAsyncIterator()
-        _ = await iterator.next()
+        return await iterator.next()
     }
 }

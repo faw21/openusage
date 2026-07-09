@@ -250,6 +250,8 @@ UI recommendation:
 Provider refresh cadence:
 
 - `AppContainer.startPeriodicRefresh` calls `WidgetDataStore.refreshAll()` on launch and every `RefreshSetting.interval`.
+- The `AppContainer` loop is the sole automatic refresh owner; `DashboardView` observes results and does not refresh when it mounts or the popover opens.
+- Provider-enablement wakes run promptly but preserve the existing scheduled deadline, so a cache-hit pass cannot postpone the next live fetch.
 - `RefreshSetting.interval` is fixed at 5 minutes.
 - Manual refresh uses `dataStore.refreshAll(force: true)`.
 - `WidgetDataStore.refresh(providerID:force:)` honors `ProviderSnapshotCache.snapshot(providerID:)` unless forced.

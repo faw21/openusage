@@ -20,7 +20,8 @@ final class RefreshWakeSignalTests: XCTestCase {
         center.post(name: wakeName, object: nil)
 
         let start = Date()
-        await signal.waitForWake(timeout: 60)
+        let trigger = await signal.wait(timeout: .seconds(60))
+        XCTAssertEqual(trigger, .enablementChange)
         XCTAssertLessThan(
             Date().timeIntervalSince(start), 5,
             "a wake posted before the wait began must be buffered, not lost"
@@ -32,12 +33,13 @@ final class RefreshWakeSignalTests: XCTestCase {
         let signal = RefreshWakeSignal(name: wakeName, center: center)
 
         let start = Date()
-        let wait = Task { await signal.waitForWake(timeout: 60) }
+        let wait = Task { await signal.wait(timeout: .seconds(60)) }
         // Let the wait suspend before posting, so this exercises the live-wake path (not the buffer).
         await Task.yield()
         center.post(name: wakeName, object: nil)
 
-        await wait.value
+        let trigger = await wait.value
+        XCTAssertEqual(trigger, .enablementChange)
         XCTAssertLessThan(Date().timeIntervalSince(start), 5)
     }
 
@@ -46,7 +48,8 @@ final class RefreshWakeSignalTests: XCTestCase {
         let signal = RefreshWakeSignal(name: wakeName, center: center)
 
         let start = Date()
-        await signal.waitForWake(timeout: 0.1)
+        let trigger = await signal.wait(timeout: .milliseconds(100))
+        XCTAssertEqual(trigger, .timer)
         // `Task.sleep` never fires early; returning proves the timer path works without any wake.
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.09)
     }
@@ -60,11 +63,13 @@ final class RefreshWakeSignalTests: XCTestCase {
         }
 
         // The burst collapses into one buffered wake: the first wait consumes it immediately...
-        await signal.waitForWake(timeout: 60)
+        let wakeTrigger = await signal.wait(timeout: .seconds(60))
+        XCTAssertEqual(wakeTrigger, .enablementChange)
 
         // ...and the second finds nothing buffered, so it sleeps out its full timeout.
         let start = Date()
-        await signal.waitForWake(timeout: 0.1)
+        let timerTrigger = await signal.wait(timeout: .milliseconds(100))
+        XCTAssertEqual(timerTrigger, .timer)
         XCTAssertGreaterThanOrEqual(
             Date().timeIntervalSince(start), 0.09,
             "a burst of wakes must coalesce into one, not queue up extra refresh passes"

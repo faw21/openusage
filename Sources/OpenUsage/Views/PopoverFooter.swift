@@ -98,8 +98,15 @@ struct PopoverFooter: View {
 
     private func updateStatusText(now: Date) -> String {
         if isUpdating { return "Updating…" }
-        let base = dataStore.lastRefreshAt ?? now
-        let remaining = max(0, base.addingTimeInterval(RefreshSetting.interval).timeIntervalSince(now))
+        return Self.countdownText(nextAutomaticRefreshAt: dataStore.nextAutomaticRefreshAt, now: now)
+    }
+
+    /// Pure formatting seam for the scheduler-owned deadline. Keeping the deadline (rather than a
+    /// loosely related batch-completion time) as the input makes early and manual refreshes unable to
+    /// reset the displayed cadence.
+    static func countdownText(nextAutomaticRefreshAt: Date?, now: Date) -> String {
+        let target = nextAutomaticRefreshAt ?? now.addingTimeInterval(RefreshSetting.interval)
+        let remaining = max(0, target.timeIntervalSince(now))
         let totalSeconds = Int(remaining.rounded(.up))
         if totalSeconds >= 60 {
             let minutes = Int((Double(totalSeconds) / 60).rounded(.up))
