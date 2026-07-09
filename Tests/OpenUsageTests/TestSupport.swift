@@ -331,6 +331,55 @@ final class CountingProviderRuntime: ProviderRuntime {
     }
 }
 
+@MainActor
+final class MutableFlag {
+    var value: Bool
+
+    init(value: Bool = true) {
+        self.value = value
+    }
+}
+
+/// A controllable provider sequence for refresh ownership/coalescing tests. Every request suspends until
+/// `resumeNext()` supplies its corresponding snapshot, making request order and overlap deterministic.
+@MainActor
+final class SuspendedSequenceProviderRuntime: ProviderRuntime {
+    let provider: Provider
+    let widgetDescriptors: [WidgetDescriptor]
+    var onStart: (Int) -> Void = { _ in }
+    private(set) var refreshCount = 0
+    private(set) var startedWhileCancelled: [Bool] = []
+    private(set) var maximumConcurrentRefreshCount = 0
+
+    private var activeRefreshCount = 0
+    private var snapshots: [ProviderSnapshot]
+    private var continuations: [CheckedContinuation<ProviderSnapshot, Never>] = []
+
+    init(provider: Provider, descriptors: [WidgetDescriptor], snapshots: [ProviderSnapshot]) {
+        self.provider = provider
+        self.widgetDescriptors = descriptors
+        self.snapshots = snapshots
+    }
+
+    func refresh() async -> ProviderSnapshot {
+        refreshCount += 1
+        activeRefreshCount += 1
+        maximumConcurrentRefreshCount = max(maximumConcurrentRefreshCount, activeRefreshCount)
+        defer { activeRefreshCount -= 1 }
+        startedWhileCancelled.append(Task.isCancelled)
+        onStart(refreshCount)
+        return await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func resumeNext() {
+        precondition(!snapshots.isEmpty, "test provided too few snapshots")
+        precondition(!continuations.isEmpty, "no suspended refresh to resume")
+        continuations.removeFirst().resume(returning: snapshots.removeFirst())
+    }
+}
+
 /// A runtime that returns `first` on the first refresh and `second` on every refresh after — for
 /// sequences like a success that later turns into a failure (e.g. testing that a hard error takes
 /// precedence over a stale soft warning from the prior success).

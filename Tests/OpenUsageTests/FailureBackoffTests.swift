@@ -80,7 +80,7 @@ final class FailureBackoffTests: XCTestCase {
         XCTAssertEqual(runtime.refreshCount, 3)
     }
 
-    func testClearingBackoffAllowsImmediateReprobe() async {
+    func testPreparingProviderEnablementAllowsImmediateReprobe() async {
         // The re-enable path: clearing the backoff must let the very next pass probe, even inside the
         // window, so a just-re-enabled provider isn't stuck on stale data until the 5-minute heartbeat.
         var clock = Date(timeIntervalSince1970: 1_800_000_000)
@@ -94,7 +94,7 @@ final class FailureBackoffTests: XCTestCase {
         await store.refreshAll()                       // inside window → suppressed
         XCTAssertEqual(runtime.refreshCount, 1)
 
-        store.clearFailureBackoff(for: runtime.provider.id)
+        store.prepareProviderEnablementRefresh(for: runtime.provider.id)
         await store.refreshAll()                       // backoff cleared → probes immediately
         XCTAssertEqual(runtime.refreshCount, 2)
     }

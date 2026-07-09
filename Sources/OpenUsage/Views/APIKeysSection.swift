@@ -9,8 +9,7 @@ import AppKit
 ///
 /// A saved key writes to the config file the auth store already reads, and config > env — so "save" is
 /// also "override the env key", and clearing a saved override falls back to the env key or to none.
-/// After any change the card clears the provider's failure backoff and forces a refresh so the
-/// dashboard updates immediately.
+/// After any change the card forces a refresh so the dashboard updates immediately.
 struct APIKeysSection: View {
     let provider: any APIKeyManaging
     @Environment(WidgetDataStore.self) private var dataStore
@@ -241,12 +240,11 @@ struct APIKeysSection: View {
         }
     }
 
-    /// Clear any failure backoff so the wake refresh actually probes the provider, then force a
-    /// refresh so the dashboard shows the new key's data immediately instead of waiting for the next
-    /// 5-minute pass. No-op for the refresh if the provider is disabled — the key is still saved.
+    /// Force a refresh so the dashboard shows the new key's data immediately instead of waiting for
+    /// the next 5-minute pass. Force already bypasses failure backoff and joins an in-flight request as
+    /// one follow-up. No-op for the refresh if the provider is disabled — the key is still saved.
     private func triggerRefresh() {
         let id = provider.provider.id
-        dataStore.clearFailureBackoff(for: id)
         Task { await dataStore.refresh(providerID: id, force: true) }
     }
 }

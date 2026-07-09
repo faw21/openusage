@@ -1,14 +1,6 @@
 import Foundation
 import Observation
 
-/// A compact staleness hint for a provider's on-screen snapshot. `label` is a short, fixed word
-/// ("Outdated") that stays narrow next to long plan names like "Super Grok Heavy", while the precise
-/// age lives in `tooltip` ("Last updated 3h 12m ago"), revealed on hover.
-struct StalenessHint: Equatable {
-    let label: String
-    let tooltip: String
-}
-
 @MainActor
 @Observable
 final class WidgetDataStore {
@@ -60,6 +52,9 @@ final class WidgetDataStore {
     /// Per-provider earliest next-probe time after a failure (see `failureRetryBackoff`). Not part of
     /// observable UI state, so it's excluded from `@Observable` tracking.
     @ObservationIgnored private var failureRetryAfter: [String: Date] = [:]
+
+    /// Coalesces forced follow-ups and resumes callers that join an active provider request.
+    @ObservationIgnored private let refreshCoalescer = ProviderRefreshCoalescer()
 
     /// Owns the quota pace-notification subsystem (dedup state, fire/deliver decision, trace). This store
     /// just gathers each pass's enabled bounded metrics and delegates.
@@ -194,12 +189,6 @@ final class WidgetDataStore {
         )
     }
 
-    /// What a single provider's refresh actually did this pass, so `refreshAll` can summarize the batch
-    /// from real outcomes rather than cumulative error state. `.backedOff` is a probe deliberately skipped
-    /// because the provider failed within the last `failureRetryBackoff` — distinct from `.skipped`
-    /// (disabled / unknown / already in flight) so a wake-burst's suppression is visible in the logs.
-    enum RefreshOutcome: Sendable { case refreshed, failed, cacheHit, skipped, backedOff }
-
     @discardableResult
     func refresh(providerID: String, force: Bool = false) async -> RefreshOutcome {
         guard isProviderEnabled(providerID) else { return .skipped }
@@ -222,16 +211,115 @@ final class WidgetDataStore {
         }
 
         guard let provider = providersByID[providerID] else { return .skipped }
-        // Skip if an in-flight refresh already owns this provider (e.g. the background timer racing the
-        // first popover open), so we never fire duplicate network calls for the same provider.
+        // Skip if an in-flight refresh already owns this provider (e.g. a manual refresh racing the
+        // background timer), so we never fire duplicate network calls for the same provider.
         guard !refreshingProviderIDs.contains(providerID) else {
-            AppLog.debug(.refresh, "cache skip \(providerID) (already in flight)")
+            // Wait for the owner's real outcome. A force also requests one fresh post-flight probe because
+            // credentials may have changed after the owner loaded them.
+            AppLog.debug(.refresh, "\(force ? "queue forced" : "join") refresh \(providerID) (already in flight)")
+            return await refreshCoalescer.join(providerID: providerID, force: force)
+        }
+
+        refreshingProviderIDs.insert(providerID)
+        var ownsProviderSlot = true
+        defer {
+            if ownsProviderSlot {
+                refreshingProviderIDs.remove(providerID)
+            }
+        }
+
+        var outcome = await performRefresh(providerID: providerID, provider: provider, force: force)
+        if Task.isCancelled {
+            if refreshCoalescer.hasQueuedForcedRefresh(providerID: providerID) {
+                // The cancelled owner cannot satisfy a force requested by another live caller. Release
+                // the provider slot and move that work to a fresh, independent task.
+                ownsProviderSlot = false
+                refreshingProviderIDs.remove(providerID)
+                handOffQueuedForcedRefresh(providerID: providerID)
+            } else {
+                refreshCoalescer.resolveWaiters(providerID: providerID, outcome: .skipped)
+            }
             return .skipped
         }
-        refreshingProviderIDs.insert(providerID)
-        defer { refreshingProviderIDs.remove(providerID) }
+
+        var queuedOutcome = outcome
+        while let forceClaim = refreshCoalescer.takeQueuedForcedRefresh(providerID: providerID) {
+            // Cancellation can land after the check above but before this claim. Restore its original
+            // provenance instead of letting an already-cancelled owner enter provider work.
+            if Task.isCancelled {
+                ownsProviderSlot = false
+                finishCancelledForcedRefreshClaim(forceClaim, providerID: providerID)
+                return .skipped
+            }
+            // A disable that lands during the active request wins; do not start a new request for a
+            // provider the user has since turned off.
+            guard isProviderEnabled(providerID) else {
+                queuedOutcome = .skipped
+                break
+            }
+            AppLog.debug(.refresh, "run queued forced refresh \(providerID)")
+            outcome = await performRefresh(providerID: providerID, provider: provider, force: true)
+            queuedOutcome = outcome
+            if Task.isCancelled {
+                ownsProviderSlot = false
+                finishCancelledForcedRefreshClaim(forceClaim, providerID: providerID)
+                return .skipped
+            }
+        }
+        refreshCoalescer.resolveWaiters(providerID: providerID, outcome: queuedOutcome)
+        return outcome
+    }
+
+    /// Release a cancelled owner's slot and preserve only live intent from its claimed follow-up. A
+    /// cancelled waiter must not manufacture an ownerless request; enablement intent remains valid on
+    /// its own and is handed to a task with an independent cancellation lifetime.
+    private func finishCancelledForcedRefreshClaim(
+        _ claim: ProviderRefreshCoalescer.ForcedRefreshClaim,
+        providerID: String
+    ) {
+        let hasLiveForcedRefresh = refreshCoalescer.restoreQueuedForcedRefresh(
+            claim,
+            providerID: providerID
+        )
+        refreshingProviderIDs.remove(providerID)
+        if hasLiveForcedRefresh {
+            handOffQueuedForcedRefresh(providerID: providerID)
+        } else {
+            refreshCoalescer.resolveWaiters(providerID: providerID, outcome: .skipped)
+        }
+    }
+
+    /// Let the coalescer continue forced work with an independent cancellation lifetime. Consuming the
+    /// queue before `refresh(force:)` makes that call the promised follow-up, not a third request.
+    private func handOffQueuedForcedRefresh(providerID: String) {
+        refreshCoalescer.handOffQueuedForcedRefresh(providerID: providerID) { [weak self] in
+            guard let self, self.isProviderEnabled(providerID), self.providersByID[providerID] != nil else {
+                return nil
+            }
+            return await self.refresh(providerID: providerID, force: true)
+        }
+    }
+
+    private func performRefresh(
+        providerID: String,
+        provider: ProviderRuntime,
+        force: Bool
+    ) async -> RefreshOutcome {
+        // This is the final boundary before credential/network work. It also closes cancellation that
+        // lands immediately after a queued claim's explicit pre-flight check.
+        guard !Task.isCancelled else {
+            AppLog.debug(.refresh, "\(providerID) refresh cancelled before provider work")
+            return .skipped
+        }
         let start = Date()
         let snapshot = await provider.refresh()
+        // Providers return user-facing error snapshots rather than throwing. A cancelled network call
+        // can therefore arrive here looking like a normal failure; discard it before mutating errors,
+        // backoff, telemetry, snapshots, or cache so a later task can retry immediately.
+        guard !Task.isCancelled else {
+            AppLog.debug(.refresh, "\(providerID) refresh cancelled")
+            return .skipped
+        }
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
         if let message = Self.errorMessage(in: snapshot) {
             // Failed refresh: surface the error but keep the last good snapshot on screen rather than
@@ -255,12 +343,15 @@ final class WidgetDataStore {
         return .refreshed
     }
 
-    /// Clears a provider's failure backoff so the next pass probes it immediately. Called when the user
-    /// re-enables a provider: the enablement wake exists to fetch promptly, so a stale backoff from a
-    /// failure just before it was turned off must not suppress that fetch (the loop wouldn't otherwise
-    /// retry until the 5-minute heartbeat). The periodic loop never calls this — only the user action does.
-    func clearFailureBackoff(for providerID: String) {
+    /// Prepare the refresh wake emitted specifically when the user enables a provider. Clear any stale
+    /// failure backoff, and when an older request is still running preserve an independent forced
+    /// follow-up so that request cannot fail after this clear and silently restore the backoff.
+    /// Credential saves do not call this: their forced refresh already bypasses backoff and coalesces.
+    func prepareProviderEnablementRefresh(for providerID: String) {
         failureRetryAfter[providerID] = nil
+        if refreshingProviderIDs.contains(providerID) {
+            refreshCoalescer.queueEnablementForcedRefresh(providerID: providerID)
+        }
     }
 
     /// The provider's latest refresh error, or `nil` when its last refresh succeeded.
@@ -503,4 +594,3 @@ final class WidgetDataStore {
         return Double(value[match].replacingOccurrences(of: ",", with: ""))
     }
 }
-

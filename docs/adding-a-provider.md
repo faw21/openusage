@@ -87,6 +87,10 @@ in-app **Settings → API Keys** card manages its key with no per-provider UI wo
   name for the card's copy.
 - `AppContainer` collects every `APIKeyManaging` provider into `apiKeyProviders`, which the card
   lists. Add the provider to the registry as usual and the card picks it up.
+- Saving or removing a key forces a live refresh, which already bypasses failure backoff. If an older
+  request is still running, the store coalesces the change into one post-request refresh so the newly
+  selected credential is the one that wins; credential-save code must not also prepare an enablement
+  refresh or it can queue the same work twice.
 
 Persist the key to a file the auth store already checks (don't introduce a parallel store), so the
 file remains the source of truth and a user can still edit it by hand.
