@@ -68,7 +68,10 @@ struct GrokAuthStore: Sendable {
             throw GrokAuthError.notLoggedIn
         }
 
-        let candidates = auth.compactMap { entryKey, entry -> GrokAuthState? in
+        // JSON object and Swift Dictionary order are not contracts. A stable key order makes
+        // multi-account fallback deterministic across launches and gives tests a real preference rule.
+        let candidates = auth.keys.sorted().compactMap { entryKey -> GrokAuthState? in
+            guard let entry = auth[entryKey] else { return nil }
             guard let token = trimmed(entry.key) else { return nil }
             return GrokAuthState(auth: auth, entryKey: entryKey, entry: entry, token: token)
         }

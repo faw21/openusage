@@ -173,6 +173,38 @@ final class GrokProviderTests: XCTestCase {
         XCTAssertNotNil(snapshot.errorCategory)
     }
 
+    func testPlanHTTPFailureIsLoggedWithoutDiscardingPrimaryUsage() async throws {
+        let provider = makeProvider(httpClient: RecordingHTTPClient { request in
+            if request.url == GrokUsageClient.settingsURL {
+                return HTTPResponse(statusCode: 503, headers: [:], body: Data())
+            }
+            return Self.defaultRoutes(request)
+        })
+
+        let (snapshot, logs) = try await captureLogs { await provider.refresh() }
+
+        XCTAssertNil(snapshot.plan)
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertNotNil(progress(snapshot.lines, "Weekly limit"))
+        XCTAssertTrue(logs.contains("optional plan request returned HTTP 503"), logs)
+    }
+
+    func testPlanTransportFailureIsLoggedWithoutDiscardingPrimaryUsage() async throws {
+        let provider = makeProvider(httpClient: RecordingHTTPClient { request in
+            if request.url == GrokUsageClient.settingsURL {
+                throw URLError(.cannotConnectToHost)
+            }
+            return Self.defaultRoutes(request)
+        })
+
+        let (snapshot, logs) = try await captureLogs { await provider.refresh() }
+
+        XCTAssertNil(snapshot.plan)
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertNotNil(progress(snapshot.lines, "Weekly limit"))
+        XCTAssertTrue(logs.contains("optional plan request failed"), logs)
+    }
+
     func testNonWeeklyPeriodShowsNoWeeklyLineAndNoWarning() async {
         // A not-yet-migrated (monthly-period) account is a valid state, not a failure: the Weekly
         // tile reads "No data" without the amber triangle, and the badge still renders.
@@ -311,6 +343,27 @@ final class GrokProviderTests: XCTestCase {
 
     private func noLogScanner() -> GrokLogUsageScanner {
         GrokLogUsageScanner(files: FakeFiles(), environment: FakeEnvironment(), homeDirectory: { URL(fileURLWithPath: "/home/none") })
+    }
+
+    private func captureLogs(
+        _ operation: () async -> ProviderSnapshot
+    ) async throws -> (ProviderSnapshot, String) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenUsageTests.GrokPlan.\(UUID().uuidString)", isDirectory: true)
+        let sink = LogFile(directory: directory, fileName: "OpenUsage.log")
+        sink.open()
+        let originalSink = AppLog.sink
+        AppLog.sink = sink
+        AppLog.reloadLevel(.warn)
+        defer {
+            AppLog.sink = originalSink
+            AppLog.reloadLevel()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let snapshot = await operation()
+        let logs = try String(contentsOf: directory.appendingPathComponent("OpenUsage.log"), encoding: .utf8)
+        return (snapshot, logs)
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {

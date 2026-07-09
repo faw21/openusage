@@ -131,6 +131,16 @@ extension GrokUsageError: CategorizedError {
     }
 }
 
+extension GrokRefreshError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .connectionFailed: .network
+        case .invalidResponse: .decoding
+        case .requestFailed(let status): ErrorCategory.http(status)
+        }
+    }
+}
+
 extension DevinAuthError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {

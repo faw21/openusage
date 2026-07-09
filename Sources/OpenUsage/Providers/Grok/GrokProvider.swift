@@ -58,24 +58,63 @@ final class GrokProvider: ProviderRuntime {
     private func loadAndProbe() async throws -> ProviderSnapshot {
         let candidates = try authStore.loadAuthCandidates()
         var sawExpiredCandidate = false
+        var refreshFailure: Error?
 
         for var state in candidates {
             if authStore.needsRefresh(entry: state.entry, token: state.token) {
-                if let refreshed = await refreshAccessToken(state: &state) {
-                    return try await probe(state: &state, accessToken: refreshed)
+                let isExpired = authStore.isExpired(entry: state.entry, token: state.token)
+                let refreshed: String?
+                do {
+                    refreshed = try await refreshAccessToken(state: &state)
+                } catch {
+                    if isExpired {
+                        sawExpiredCandidate = true
+                        if !(error is GrokAuthError), refreshFailure == nil {
+                            refreshFailure = error
+                        }
+                        continue
+                    }
+                    // A token inside the refresh buffer is still usable. Preserve that resilience, but
+                    // record why the proactive refresh failed before trying the current token.
+                    AppLog.warn(LogTag.auth("grok"), "proactive token refresh failed; trying the current unexpired token: \(error.localizedDescription)")
+                    refreshed = nil
                 }
-                if authStore.isExpired(entry: state.entry, token: state.token) {
+                if let refreshed {
+                    if let snapshot = try await probeCandidate(state: &state, accessToken: refreshed) {
+                        return snapshot
+                    }
+                    sawExpiredCandidate = true
+                    continue
+                }
+                if isExpired {
                     sawExpiredCandidate = true
                     continue
                 }
             }
-            return try await probe(state: &state, accessToken: state.token)
+            if let snapshot = try await probeCandidate(state: &state, accessToken: state.token) {
+                return snapshot
+            }
+            sawExpiredCandidate = true
         }
 
+        if let refreshFailure {
+            throw refreshFailure
+        }
         if sawExpiredCandidate {
             throw GrokAuthError.expired
         }
         throw GrokAuthError.invalidAuth
+    }
+
+    /// A rejected token invalidates only this stored account. Keep probing later accounts, while every
+    /// non-authentication failure still escapes immediately with its precise network/HTTP/decoding type.
+    private func probeCandidate(state: inout GrokAuthState, accessToken: String) async throws -> ProviderSnapshot? {
+        do {
+            return try await probe(state: &state, accessToken: accessToken)
+        } catch is GrokAuthError {
+            AppLog.warn(LogTag.auth("grok"), "stored account was rejected; trying the next account if available")
+            return nil
+        }
     }
 
     private func probe(state: inout GrokAuthState, accessToken: String) async throws -> ProviderSnapshot {
@@ -112,7 +151,7 @@ final class GrokProvider: ProviderRuntime {
             token: accessToken,
             attempt: { try await self.usageClient.fetchCreditsConfig(accessToken: $0) },
             refreshAccessToken: {
-                guard let refreshed = await self.refreshAccessToken(state: &working) else {
+                guard let refreshed = try await self.refreshAccessToken(state: &working) else {
                     throw GrokAuthError.expired
                 }
                 return refreshed
@@ -122,7 +161,7 @@ final class GrokProvider: ProviderRuntime {
         )
     }
 
-    private func refreshAccessToken(state: inout GrokAuthState) async -> String? {
+    private func refreshAccessToken(state: inout GrokAuthState) async throws -> String? {
         guard let refreshToken = authStore.refreshToken(for: state.entry) else {
             return nil
         }
@@ -134,27 +173,41 @@ final class GrokProvider: ProviderRuntime {
                 clientID: authStore.clientID(entryKey: state.entryKey, entry: state.entry)
             )
         } catch {
-            // Log the real cause: a transport failure here is currently surfaced to the user as
-            // "auth expired" (loadAndProbe / the retry closure both map a nil refresh to .expired), so
-            // without this line the actual reason (network/DNS/timeout) is lost. (Refining the
-            // user-facing message to a request-failure is deferred — it needs a careful rework of the
-            // candidate-loop + retry-closure semantics.)
             AppLog.warn(LogTag.auth("grok"), "token refresh request failed (transport): \(error.localizedDescription)")
-            return nil
+            throw GrokRefreshError.connectionFailed
         }
 
+        if refreshTokenWasRejected(response) {
+            AppLog.warn(LogTag.auth("grok"), "token refresh failed (HTTP \(response.statusCode))")
+            throw GrokAuthError.expired
+        }
         guard (200..<300).contains(response.statusCode) else {
             AppLog.warn(LogTag.auth("grok"), "token refresh failed (HTTP \(response.statusCode))")
-            return nil
+            throw GrokRefreshError.requestFailed(response.statusCode)
         }
-        guard let decoded = usageClient.decodeRefreshResponse(response),
-              !decoded.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
+
+        let decoded: GrokRefreshResponse
+        do {
+            decoded = try usageClient.decodeRefreshResponse(response)
+        } catch {
             AppLog.warn(LogTag.auth("grok"), "token refresh returned an undecodable or empty access token")
-            return nil
+            throw GrokRefreshError.invalidResponse
+        }
+        guard !decoded.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            AppLog.warn(LogTag.auth("grok"), "token refresh returned an undecodable or empty access token")
+            throw GrokRefreshError.invalidResponse
         }
 
         let accessToken = decoded.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expiresAt: Date
+        do {
+            expiresAt = try refreshExpiryDate(response: decoded, accessToken: accessToken)
+        } catch {
+            AppLog.warn(LogTag.auth("grok"), "token refresh returned invalid expiry metadata")
+            throw error
+        }
+
+        // Validate the complete refresh payload before mutating in-memory or persisted auth state.
         state.token = accessToken
         state.entry.key = accessToken
         if let refreshToken = decoded.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines), !refreshToken.isEmpty {
@@ -164,7 +217,6 @@ final class GrokProvider: ProviderRuntime {
             state.entry.idToken = idToken
         }
 
-        let expiresAt = refreshExpiryDate(response: decoded, accessToken: accessToken)
         state.entry.expiresAt = OpenUsageISO8601.string(from: expiresAt)
         // Fail loudly: a swallowed save strands the rotated token on disk (next launch re-refreshes /
         // can surface a false "auth expired"). The refreshed token works for this session, so log and
@@ -177,8 +229,21 @@ final class GrokProvider: ProviderRuntime {
         return accessToken
     }
 
-    private func refreshExpiryDate(response: GrokRefreshResponse, accessToken: String) -> Date {
-        if let expiresIn = response.expiresIn, expiresIn.isFinite, expiresIn > 0 {
+    private func refreshTokenWasRejected(_ response: HTTPResponse) -> Bool {
+        guard (400..<500).contains(response.statusCode),
+              let body = ProviderParse.jsonObject(response.body),
+              let errorCode = (body["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        else {
+            return false
+        }
+        return errorCode.caseInsensitiveCompare("invalid_grant") == .orderedSame
+    }
+
+    private func refreshExpiryDate(response: GrokRefreshResponse, accessToken: String) throws -> Date {
+        if let expiresIn = response.expiresIn {
+            guard expiresIn.isFinite, expiresIn > 0 else {
+                throw GrokRefreshError.invalidResponse
+            }
             return now().addingTimeInterval(expiresIn)
         }
         if let tokenExpiry = authStore.tokenExpiresAt(accessToken) {
@@ -188,10 +253,21 @@ final class GrokProvider: ProviderRuntime {
     }
 
     private func fetchPlanName(accessToken: String) async -> String? {
+        let response: HTTPResponse
         do {
-            return GrokUsageMapper.planName(from: try await usageClient.fetchSettings(accessToken: accessToken))
+            response = try await usageClient.fetchSettings(accessToken: accessToken)
         } catch {
+            AppLog.warn(LogTag.plugin("grok"), "optional plan request failed")
             return nil
         }
+        guard (200..<300).contains(response.statusCode) else {
+            AppLog.warn(LogTag.plugin("grok"), "optional plan request returned HTTP \(response.statusCode)")
+            return nil
+        }
+        guard let plan = GrokUsageMapper.planName(from: response) else {
+            AppLog.warn(LogTag.plugin("grok"), "optional plan response contained invalid plan metadata")
+            return nil
+        }
+        return plan
     }
 }

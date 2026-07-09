@@ -31,6 +31,25 @@ enum GrokUsageError: Error, LocalizedError, Equatable {
     }
 }
 
+/// Failures from the OAuth token endpoint are separate from billing failures so a temporary refresh
+/// outage never masquerades as an expired Grok login.
+enum GrokRefreshError: Error, LocalizedError, Equatable {
+    case connectionFailed
+    case invalidResponse
+    case requestFailed(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .connectionFailed:
+            return "Grok token refresh failed. Check your connection."
+        case .invalidResponse:
+            return "Grok token refresh response changed."
+        case .requestFailed(let statusCode):
+            return "Grok token refresh failed (HTTP \(statusCode)). Try again later."
+        }
+    }
+}
+
 struct GrokUsageClient: Sendable {
     static let settingsURL = URL(string: "https://cli-chat-proxy.grok.com/v1/settings")!
     static let refreshURL = URL(string: "https://auth.x.ai/oauth2/token")!
@@ -81,8 +100,8 @@ struct GrokUsageClient: Sendable {
         ))
     }
 
-    func decodeRefreshResponse(_ response: HTTPResponse) -> GrokRefreshResponse? {
-        try? JSONDecoder().decode(GrokRefreshResponse.self, from: response.body)
+    func decodeRefreshResponse(_ response: HTTPResponse) throws -> GrokRefreshResponse {
+        try JSONDecoder().decode(GrokRefreshResponse.self, from: response.body)
     }
 
     private func authHeaders(accessToken: String) -> [String: String] {
@@ -94,4 +113,3 @@ struct GrokUsageClient: Sendable {
         ]
     }
 }
-
