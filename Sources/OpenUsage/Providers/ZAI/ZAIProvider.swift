@@ -56,14 +56,12 @@ final class ZAIProvider: ProviderRuntime {
 
         switch quota {
         case .success(let body):
-            // A valid key whose account has no GLM Coding Plan gets a 2xx with `success:false`. Surface
-            // that as a clear provider warning (the header's amber notice) rather than three blank "No
-            // data" meters that don't explain why nothing's there.
-            if ZAIUsageMapper.isNoCodingPlan(body) {
-                return ProviderSnapshot.error(provider: provider, error: ZAIUsageError.noCodingPlan)
+            do {
+                let mapped = try ZAIUsageMapper.map(quotaBody: body, subscriptionBody: subscription)
+                return ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines, refreshedAt: now())
+            } catch {
+                return ProviderSnapshot.error(provider: provider, error: error)
             }
-            let mapped = ZAIUsageMapper.map(quotaBody: body, subscriptionBody: subscription)
-            return ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines, refreshedAt: now())
         case .authFailure:
             return ProviderSnapshot.error(provider: provider, error: ZAIAuthError.invalidKey)
         case .failed(let error):
@@ -72,7 +70,8 @@ final class ZAIProvider: ProviderRuntime {
     }
 
     /// Run the required quota call and classify the outcome: the body on 2xx, an auth failure on
-    /// 401/403, or a typed failure for any other non-2xx, transport error, or empty body.
+    /// 401/403, or a typed failure for any other non-2xx or transport error. The mapper validates the
+    /// successful response body so malformed 2xx payloads retain their decoding/business distinction.
     private func load(_ call: () async throws -> HTTPResponse) async -> QuotaResult {
         do {
             let response = try await call()

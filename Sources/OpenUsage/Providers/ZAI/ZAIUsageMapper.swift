@@ -19,31 +19,48 @@ enum ZAIUsageMapper {
     /// `(plan, lines)` from the quota + subscription payloads. `subscription` may be `nil` (the
     /// request is best-effort) and the quota's `limits` array may carry one to three entries — only
     /// what's present is mapped, so a plan without web searches still shows the session meter.
-    static func map(quotaBody: Data, subscriptionBody: Data?) -> (plan: String?, lines: [MetricLine]) {
+    static func map(quotaBody: Data, subscriptionBody: Data?) throws -> (plan: String?, lines: [MetricLine]) {
         let plan = subscriptionBody.flatMap { planName(from: $0) }
-        let lines = mapQuota(quotaBody)
+        let lines = try mapQuota(quotaBody)
         return (plan, lines)
     }
 
-    /// True when a 2xx quota body is the "valid key, but no GLM Coding Plan" signal: Z.ai answers
-    /// `{"success":false,"code":500,"msg":"…coding plan"}` with no `data`. The provider turns this into a
-    /// clear `.notAvailable` error (a header warning) instead of three blank "No data" meters that don't
-    /// say why. Matched on the structured `success:false` plus the "coding plan" phrase the message
-    /// carries (ASCII even in the localized string), so an unrelated business failure doesn't trip it.
-    static func isNoCodingPlan(_ body: Data) -> Bool {
-        guard let root = ProviderParse.jsonObject(body),
-              (root["success"] as? Bool) == false else { return false }
-        return ((root["msg"] as? String) ?? "").lowercased().contains("coding plan")
-    }
+    /// Session + weekly + web-search meters from the quota payload. Only an explicit, correctly-shaped
+    /// empty `limits` array means "No usage data"; malformed envelopes, business failures, and nonempty
+    /// arrays that cannot produce a valid meter are errors rather than silent empty-state fallbacks.
+    static func mapQuota(_ body: Data) throws -> [MetricLine] {
+        guard let root = ProviderParse.jsonObject(body) else {
+            throw ZAIUsageError.invalidResponse
+        }
 
-    /// Session + weekly + web-search meters from the quota payload. Emits the "No usage data"
-    /// placeholder when the payload carries no usable limits, matching the legacy plugin.
-    static func mapQuota(_ body: Data) -> [MetricLine] {
-        guard let root = ProviderParse.jsonObject(body) else { return [.noUsageData] }
+        if let successValue = root["success"] {
+            guard let success = jsonBoolean(successValue) else {
+                throw ZAIUsageError.invalidResponse
+            }
+            if !success {
+                if isNoCodingPlan(root) {
+                    throw ZAIUsageError.noCodingPlan
+                }
+                throw ZAIUsageError.businessFailure(code: businessCode(root))
+            }
+        }
+
         // The limits array lives under `data.limits`; the legacy plugin also tolerated the root object
         // being the container directly (no `data` wrapper), so honor both.
-        let container = root["data"] as? [String: Any] ?? root
-        guard let limits = container["limits"] as? [[String: Any]], !limits.isEmpty else {
+        let container: [String: Any]
+        if let data = root["data"] {
+            guard let data = data as? [String: Any] else {
+                throw ZAIUsageError.invalidResponse
+            }
+            container = data
+        } else {
+            container = root
+        }
+        guard let rawLimits = container["limits"],
+              let limits = rawLimits as? [[String: Any]] else {
+            throw ZAIUsageError.invalidResponse
+        }
+        guard !limits.isEmpty else {
             return [.noUsageData]
         }
 
@@ -53,20 +70,20 @@ enum ZAIUsageMapper {
         // a multi-day window is the weekly meter. Z.ai reports both, and both are percentage meters.
         let tokenLimits = limits.filter { ($0["type"] as? String) == "TOKENS_LIMIT" || ($0["name"] as? String) == "TOKENS_LIMIT" }
         for entry in tokenLimits {
-            switch classifyTokenWindow(entry) {
+            switch try classifyTokenWindow(entry) {
             case .session(let periodMs):
-                lines.append(percentLine(entry, label: "Session", periodMs: periodMs))
+                lines.append(try percentLine(entry, label: "Session", periodMs: periodMs))
             case .weekly(let periodMs):
-                lines.append(percentLine(entry, label: "Weekly", periodMs: periodMs))
-            case .unknown:
-                continue
+                lines.append(try percentLine(entry, label: "Weekly", periodMs: periodMs))
             }
         }
         if let web = findLimit(limits, type: "TIME_LIMIT") {
-            lines.append(webSearchLine(from: web))
+            lines.append(try webSearchLine(from: web))
         }
 
-        MetricLine.appendNoDataIfNeeded(&lines)
+        guard !lines.isEmpty else {
+            throw ZAIUsageError.invalidResponse
+        }
         return lines
     }
 
@@ -86,16 +103,15 @@ enum ZAIUsageMapper {
 
     /// How a `TOKENS_LIMIT` entry's window maps to a meter. Z.ai encodes the window as a `(unit, number)`
     /// pair: `unit: 3` is hours (session), `unit: 6` is weeks (weekly), `unit: 5` is months. A sub-daily
-    /// window is the session meter; a multi-day window is the weekly meter; anything unrecognized is
-    /// skipped so a future unit value can't silently overwrite a known meter.
+    /// window is the session meter and a multi-day window is the weekly meter. A recognized token-limit
+    /// entry with an unknown/missing window is invalid schema, not an empty quota.
     private enum TokenWindow {
         case session(periodMs: Int)
         case weekly(periodMs: Int)
-        case unknown
     }
 
-    private static func classifyTokenWindow(_ entry: [String: Any]) -> TokenWindow {
-        guard let periodMs = periodDurationMs(for: entry) else { return .unknown }
+    private static func classifyTokenWindow(_ entry: [String: Any]) throws -> TokenWindow {
+        let periodMs = try periodDurationMs(for: entry)
         // Sub-daily → session; multi-day → weekly. The computed window rides along so the meter's
         // cadence reflects the payload instead of a hardcoded constant.
         if periodMs < 24 * 60 * 60 * 1000 {
@@ -105,10 +121,11 @@ enum ZAIUsageMapper {
     }
 
     /// Resolve a `(unit, number)` window to milliseconds. `unit` is Z.ai's internal time-unit code.
-    private static func periodDurationMs(for entry: [String: Any]) -> Int? {
-        guard let unit = ProviderParse.number(entry["unit"]),
-              let number = ProviderParse.number(entry["number"]) else {
-            return nil
+    private static func periodDurationMs(for entry: [String: Any]) throws -> Int {
+        guard let unit = quotaNumber(entry["unit"]),
+              let number = quotaNumber(entry["number"]),
+              number > 0 else {
+            throw ZAIUsageError.invalidResponse
         }
         let unitMs: Double
         switch unit {
@@ -116,15 +133,22 @@ enum ZAIUsageMapper {
         case 4: unitMs = 24 * 60 * 60 * 1000      // days
         case 6: unitMs = 7 * 24 * 60 * 60 * 1000  // weeks
         case 5: unitMs = 30 * 24 * 60 * 60 * 1000 // months
-        default: return nil
+        default: throw ZAIUsageError.invalidResponse
         }
-        return Int(unitMs * number)
+        let periodMs = unitMs * number
+        guard periodMs >= 1, periodMs < Double(Int.max) else {
+            throw ZAIUsageError.invalidResponse
+        }
+        return Int(periodMs)
     }
 
     /// A percentage meter (Session or Weekly) from a `TOKENS_LIMIT` entry.
-    private static func percentLine(_ entry: [String: Any], label: String, periodMs: Int) -> MetricLine {
-        let percentage = ProviderParse.clampPercent(ProviderParse.number(entry["percentage"]) ?? 0)
-        let resetsAt = ProviderParse.number(entry["nextResetTime"]).map { epochMsToDate($0) }
+    private static func percentLine(_ entry: [String: Any], label: String, periodMs: Int) throws -> MetricLine {
+        guard let rawPercentage = quotaNumber(entry["percentage"]) else {
+            throw ZAIUsageError.invalidResponse
+        }
+        let percentage = ProviderParse.clampPercent(rawPercentage)
+        let resetsAt = try optionalNumber(entry["nextResetTime"]).map { epochMsToDate($0) }
         return .progress(
             label: label,
             used: percentage,
@@ -136,16 +160,20 @@ enum ZAIUsageMapper {
     }
 
     /// TIME_LIMIT → a count meter (used / limit) for monthly web-search/reader calls.
-    private static func webSearchLine(from entry: [String: Any]) -> MetricLine {
-        let used = max(0, ProviderParse.number(entry["currentValue"]) ?? 0)
-        let limit = max(0, ProviderParse.number(entry["usage"]) ?? 0)
+    private static func webSearchLine(from entry: [String: Any]) throws -> MetricLine {
+        guard let rawUsed = quotaNumber(entry["currentValue"]),
+              let rawLimit = quotaNumber(entry["usage"]),
+              rawUsed >= 0,
+              rawLimit >= 0 else {
+            throw ZAIUsageError.invalidResponse
+        }
         // TIME_LIMIT carries a nextResetTime in current payloads (monthly renewal); honor it when
         // present so the countdown shows the real reset, otherwise the period cadence reads "monthly".
-        let resetsAt = ProviderParse.number(entry["nextResetTime"]).map { epochMsToDate($0) }
+        let resetsAt = try optionalNumber(entry["nextResetTime"]).map { epochMsToDate($0) }
         return .progress(
             label: "Web Searches",
-            used: used,
-            limit: limit,
+            used: rawUsed,
+            limit: rawLimit,
             format: .count(suffix: "searches"),
             resetsAt: resetsAt,
             periodDurationMs: monthlyPeriodMs
@@ -161,6 +189,55 @@ enum ZAIUsageMapper {
             }
         }
         return nil
+    }
+
+    /// The known "valid key, no GLM Coding Plan" business response includes `success:false` and an
+    /// absence phrase around "coding plan" inside its otherwise-localized message. A generic service
+    /// failure that merely mentions coding plans must remain a business error.
+    private static func isNoCodingPlan(_ root: [String: Any]) -> Bool {
+        let message = ((root["msg"] as? String) ?? "").lowercased()
+        return message.contains("不存在coding plan")
+            || message.contains("no coding plan")
+            || message.contains("coding plan does not exist")
+            || message.contains("coding plan not found")
+    }
+
+    private static func businessCode(_ root: [String: Any]) -> Int? {
+        guard let number = quotaNumber(root["code"]),
+              number.rounded() == number,
+              number >= Double(Int.min),
+              number < Double(Int.max) else {
+            return nil
+        }
+        return Int(number)
+    }
+
+    /// Optional numeric fields may be absent/null, but a present value with the wrong type is a schema
+    /// error. This keeps a malformed reset timestamp from being silently treated as "no reset".
+    private static func optionalNumber(_ value: Any?) throws -> Double? {
+        guard let value, !(value is NSNull) else { return nil }
+        guard let number = quotaNumber(value) else {
+            throw ZAIUsageError.invalidResponse
+        }
+        return number
+    }
+
+    /// `JSONSerialization` bridges both JSON booleans and numbers through `NSNumber`; reject the
+    /// boolean subtype before using the shared permissive numeric parser.
+    private static func quotaNumber(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber,
+           CFGetTypeID(number) == CFBooleanGetTypeID() {
+            return nil
+        }
+        return ProviderParse.number(value)
+    }
+
+    private static func jsonBoolean(_ value: Any) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            return nil
+        }
+        return number.boolValue
     }
 
     /// `nextResetTime` arrives as epoch milliseconds (e.g. `1770648402389`).

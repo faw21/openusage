@@ -45,7 +45,10 @@ Two undocumented internal endpoints Z.ai's own subscription UI uses (stable in p
 - `GET https://api.z.ai/api/monitor/usage/quota/limit` — the quota meters.
 
 The quota response carries a `limits` array. Each `TOKENS_LIMIT` entry is a token window; its
-window length decides which meter it feeds (sub-daily → Session, multi-day → Weekly), so a `TIME_LIMIT` entry is the monthly web-search count. Reset times come back as epoch milliseconds.
+window length decides which meter it feeds (sub-daily → Session, multi-day → Weekly), while a
+`TIME_LIMIT` entry is the monthly web-search count. Reset times come back as epoch milliseconds.
+An explicitly empty `limits` array is a valid "No usage data" state. A failed or malformed response
+is shown as an error instead of being treated as zero usage.
 
 ## Troubleshooting
 
@@ -55,5 +58,9 @@ window length decides which meter it feeds (sub-daily → Session, multi-day →
 - **"No active GLM Coding Plan"** (amber notice by the name) — the key is valid, but the account has no
   GLM Coding Plan, so there's nothing to meter. Subscribe at [z.ai/subscribe](https://z.ai/subscribe);
   usage appears once your plan is active.
-- **Meters show "No usage data"** — you have a plan, but the quota endpoint returned no usable limits
-  yet. Check your [plan](https://z.ai/manage-apikey/coding-plan/personal/my-plan).
+- **"Z.ai usage request failed"** — Z.ai returned a structured failure even though the HTTP request
+  completed. Refresh later; the displayed code can help distinguish a provider outage.
+- **"Usage response invalid"** — the quota response was malformed or omitted fields needed to render
+  a meter. OpenUsage does not substitute zero for missing usage values.
+- **Meters show "No usage data"** — you have a plan, but the quota endpoint explicitly returned an
+  empty limits list. Check your [plan](https://z.ai/manage-apikey/coding-plan/personal/my-plan).

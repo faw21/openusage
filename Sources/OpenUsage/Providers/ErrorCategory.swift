@@ -204,6 +204,9 @@ extension ZAIUsageError: CategorizedError {
         case .connectionFailed: .network
         case .invalidResponse: .decoding
         case .requestFailed(let status): ErrorCategory.http(status)
+        // The associated value is an application-envelope code from a successful HTTP response, so
+        // don't misclassify it as an HTTP status in telemetry.
+        case .businessFailure: .other
         case .noCodingPlan: .notAvailable
         }
     }

@@ -38,6 +38,9 @@ enum ZAIUsageError: Error, LocalizedError, Equatable {
     case connectionFailed
     case invalidResponse
     case requestFailed(Int)
+    /// The HTTP request succeeded, but Z.ai's JSON envelope reported `success:false` for a reason
+    /// other than the known no-plan state. The optional code is the business-envelope code, not HTTP.
+    case businessFailure(code: Int?)
     /// The key is valid but the account has no GLM Coding Plan (the quota endpoint answers a 2xx with
     /// `success:false`). Distinct from a malformed/failed request — there is simply nothing to meter.
     case noCodingPlan
@@ -50,6 +53,11 @@ enum ZAIUsageError: Error, LocalizedError, Equatable {
             return ProviderUsageErrorText.invalidResponse
         case .requestFailed(let status):
             return ProviderUsageErrorText.requestFailed(statusCode: status)
+        case .businessFailure(let code):
+            if let code {
+                return "Z.ai usage request failed (code \(code)). Try again later."
+            }
+            return "Z.ai usage request failed. Try again later."
         case .noCodingPlan:
             return "No active GLM Coding Plan. Subscribe at z.ai/subscribe to see usage."
         }

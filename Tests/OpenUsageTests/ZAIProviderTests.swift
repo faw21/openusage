@@ -250,7 +250,7 @@ final class ZAIAuthStoreTests: XCTestCase {
 
 final class ZAIUsageMapperTests: XCTestCase {
     func testMapsBothLimitsToSessionAndWebSearches() throws {
-        let mapped = ZAIUsageMapper.map(quotaBody: data(quotaBothLimitsJSON), subscriptionBody: data(subscriptionJSON))
+        let mapped = try ZAIUsageMapper.map(quotaBody: data(quotaBothLimitsJSON), subscriptionBody: data(subscriptionJSON))
 
         XCTAssertEqual(mapped.plan, "GLM Coding Max")
 
@@ -292,7 +292,7 @@ final class ZAIUsageMapperTests: XCTestCase {
           "success": true
         }
         """#
-        let mapped = ZAIUsageMapper.map(quotaBody: data(divergentJSON), subscriptionBody: nil)
+        let mapped = try ZAIUsageMapper.map(quotaBody: data(divergentJSON), subscriptionBody: nil)
         XCTAssertEqual(try XCTUnwrap(progress(mapped.lines, "Session")).periodDurationMs,
                        3 * 60 * 60 * 1000)
         XCTAssertEqual(try XCTUnwrap(progress(mapped.lines, "Weekly")).periodDurationMs,
@@ -300,7 +300,7 @@ final class ZAIUsageMapperTests: XCTestCase {
     }
 
     func testMapsSessionOnlyWhenNoTimeLimit() throws {
-        let mapped = ZAIUsageMapper.map(quotaBody: data(quotaSessionOnlyJSON), subscriptionBody: nil)
+        let mapped = try ZAIUsageMapper.map(quotaBody: data(quotaSessionOnlyJSON), subscriptionBody: nil)
 
         XCTAssertNil(mapped.plan)
         XCTAssertNotNil(progress(mapped.lines, "Session"))
@@ -315,29 +315,40 @@ final class ZAIUsageMapperTests: XCTestCase {
         XCTAssertNil(ZAIUsageMapper.planName(from: data(#"{"data":[]}"#)))
     }
 
-    func testEmptyLimitsYieldNoUsageData() {
-        let mapped = ZAIUsageMapper.map(quotaBody: data(#"{"data":{"limits":[]}}"#), subscriptionBody: nil)
-        // No usable limits → the shared "No usage data" placeholder, not a blank tile.
+    func testExplicitlyEmptyLimitsYieldNoUsageData() throws {
+        let mapped = try ZAIUsageMapper.map(
+            quotaBody: data(#"{"success":true,"data":{"limits":[]}}"#),
+            subscriptionBody: nil
+        )
+        // An explicitly empty, correctly-shaped array is a valid idle state.
         XCTAssertTrue(mapped.lines.contains { $0.label == "Status" })
     }
 
-    func testDetectsNoCodingPlanBody() {
+    func testKnownNoCodingPlanBodyThrowsDedicatedError() {
         // A valid key on an account with no GLM Coding Plan: the live quota endpoint answers 2xx with
         // `success:false` / "…coding plan" (captured verbatim from the real API).
-        XCTAssertTrue(ZAIUsageMapper.isNoCodingPlan(data(#"{"code":500,"msg":"当前用户不存在coding plan","success":false}"#)))
+        XCTAssertThrowsError(
+            try ZAIUsageMapper.mapQuota(data(#"{"code":500,"msg":"当前用户不存在coding plan","success":false}"#))
+        ) { error in
+            XCTAssertEqual(error as? ZAIUsageError, .noCodingPlan)
+        }
     }
 
-    func testIsNoCodingPlanFalseForUsableOrUnrelatedBodies() {
-        // A real quota payload and an unrelated business failure are both not "no coding plan".
-        XCTAssertFalse(ZAIUsageMapper.isNoCodingPlan(data(quotaBothLimitsJSON)))
-        XCTAssertFalse(ZAIUsageMapper.isNoCodingPlan(data(#"{"code":500,"msg":"internal error","success":false}"#)))
+    func testUnrelatedBusinessFailureThrowsBusinessError() {
+        let messages = ["internal error", "coding plan service unavailable"]
+        for message in messages {
+            let body = data(#"{"code":500,"msg":"\#(message)","success":false}"#)
+            XCTAssertThrowsError(try ZAIUsageMapper.mapQuota(body), message) { error in
+                XCTAssertEqual(error as? ZAIUsageError, .businessFailure(code: 500), message)
+            }
+        }
     }
 
     func testClampsAboveRangePercentage() throws {
         let body = data(#"""
         {"data":{"limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":150,"currentValue":10,"usage":10}]}}
         """#)
-        let lines = ZAIUsageMapper.mapQuota(body)
+        let lines = try ZAIUsageMapper.mapQuota(body)
         let sessionUsed = try XCTUnwrap(progress(lines, "Session")?.used)
         XCTAssertEqual(sessionUsed, 100, accuracy: 0.001)
     }
@@ -347,7 +358,7 @@ final class ZAIUsageMapperTests: XCTestCase {
         let body = data(#"""
         {"data":{"limits":[{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":25}]}}
         """#)
-        let lines = ZAIUsageMapper.mapQuota(body)
+        let lines = try ZAIUsageMapper.mapQuota(body)
         XCTAssertNil(progress(lines, "Session"))
         let weekly = try XCTUnwrap(progress(lines, "Weekly"))
         XCTAssertEqual(weekly.used, 25, accuracy: 0.001)
