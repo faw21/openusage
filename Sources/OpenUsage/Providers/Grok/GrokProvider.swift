@@ -41,9 +41,18 @@ final class GrokProvider: ProviderRuntime {
     }
 
     func hasLocalCredentials() async -> Bool {
-        // Same source as `refresh()`: ~/.grok/auth.json with at least one keyed entry.
-        await loadOffMainActor { [authStore] in
-            ((try? authStore.loadAuthCandidates()) ?? []).isEmpty == false
+        // A proven missing file is absent. A present-but-unreadable/malformed file counts
+        // conservatively so one-shot provider detection enables Grok and `refresh()` can show the
+        // repairable error instead of silently leaving it off forever.
+        do {
+            return try await loadOffMainActor { [authStore] in
+                try !authStore.loadAuthCandidates().isEmpty
+            }
+        } catch {
+            if !(error is GrokAuthError) {
+                AppLog.error(LogTag.auth("grok"), "unexpected credential probe failure: \(error.localizedDescription)")
+            }
+            return true
         }
     }
 
@@ -56,7 +65,10 @@ final class GrokProvider: ProviderRuntime {
     }
 
     private func loadAndProbe() async throws -> ProviderSnapshot {
-        let candidates = try authStore.loadAuthCandidates()
+        let candidates = try await loadOffMainActor { [authStore] in
+            try authStore.loadAuthCandidates()
+        }
+        guard !candidates.isEmpty else { throw GrokAuthError.notLoggedIn }
         var sawExpiredCandidate = false
 
         for var state in candidates {

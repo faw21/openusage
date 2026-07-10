@@ -29,6 +29,7 @@ struct GrokAuthState: Hashable, Sendable {
 
 enum GrokAuthError: Error, LocalizedError, Equatable {
     case notLoggedIn
+    case credentialStoreUnreadable
     case invalidAuth
     case expired
 
@@ -36,6 +37,8 @@ enum GrokAuthError: Error, LocalizedError, Equatable {
         switch self {
         case .notLoggedIn:
             return "Grok not logged in. Run `grok login`."
+        case .credentialStoreUnreadable:
+            return "Couldn't read Grok credentials. Check access to ~/.grok/auth.json and try again."
         case .invalidAuth:
             return "Grok auth invalid. Run `grok login` again."
         case .expired:
@@ -61,11 +64,18 @@ struct GrokAuthStore: Sendable {
     }
 
     func loadAuthCandidates() throws -> [GrokAuthState] {
-        guard files.exists(Self.authPath),
-              let text = try? files.readText(Self.authPath),
-              let auth = Self.parseAuth(text)
-        else {
-            throw GrokAuthError.notLoggedIn
+        let text: String
+        do {
+            guard let stored = try files.readTextIfPresent(Self.authPath) else { return [] }
+            text = stored
+        } catch {
+            AppLog.error(LogTag.auth("grok"), "credential file read failed: \(error.localizedDescription)")
+            throw GrokAuthError.credentialStoreUnreadable
+        }
+
+        guard let auth = Self.parseAuth(text) else {
+            AppLog.error(LogTag.auth("grok"), "credential file is malformed")
+            throw GrokAuthError.invalidAuth
         }
 
         let candidates = auth.compactMap { entryKey, entry -> GrokAuthState? in
@@ -74,6 +84,7 @@ struct GrokAuthStore: Sendable {
         }
 
         guard !candidates.isEmpty else {
+            AppLog.error(LogTag.auth("grok"), "credential file has no usable account token")
             throw GrokAuthError.invalidAuth
         }
         return candidates
@@ -83,11 +94,18 @@ struct GrokAuthStore: Sendable {
         // Refuse to overwrite a present-but-unreadable/corrupt auth.json by rebuilding it from
         // in-memory state — that would silently drop OTHER accounts' entries. A genuinely absent file
         // (first write) is seeded from in-memory state instead.
+        let existingText: String?
+        do {
+            existingText = try files.readTextIfPresent(Self.authPath)
+        } catch {
+            AppLog.error(LogTag.auth("grok"), "credential file read before save failed: \(error.localizedDescription)")
+            throw GrokAuthError.credentialStoreUnreadable
+        }
+
         var authObject: [String: Any]
-        if files.exists(Self.authPath) {
-            guard let existingText = try? files.readText(Self.authPath),
-                  let parsed = Self.parseJSONObject(existingText)
-            else {
+        if let existingText {
+            guard let parsed = Self.parseJSONObject(existingText) else {
+                AppLog.error(LogTag.auth("grok"), "credential file is malformed; refusing to overwrite it")
                 throw GrokAuthError.invalidAuth
             }
             authObject = parsed

@@ -27,7 +27,9 @@ protocol ProviderRuntime: AnyObject {
     /// Whether credentials for this provider already exist on this machine — a cheap, local-only probe
     /// (files, keychain, SQLite; never the network). Used once, on a fresh install's first launch, by
     /// `FirstRunSeeder` to enable exactly the providers the user actually has. Mirror the credential
-    /// sources `refresh()` reads, and run blocking loads via `loadOffMainActor`.
+    /// sources `refresh()` reads, and run blocking loads via `loadOffMainActor`. Return `false` only
+    /// when those sources are proven absent; an unreadable/malformed local store should be logged and
+    /// count conservatively as present so the enabled provider can surface its friendly refresh error.
     func hasLocalCredentials() async -> Bool
 }
 
@@ -41,4 +43,11 @@ protocol ProviderRuntime: AnyObject {
 /// It is awaited immediately, so it reads like a normal call while no longer blocking the actor.
 func loadOffMainActor<T: Sendable>(_ load: @escaping @Sendable () -> T) async -> T {
     await Task.detached(priority: .utility, operation: load).value
+}
+
+/// Throwing counterpart for credential loads that reserve `nil` for proven absence and propagate an
+/// unreadable or malformed local store. Keeping the error intact lets the provider surface a friendly,
+/// categorized failure instead of relabeling it as "not logged in."
+func loadOffMainActor<T: Sendable>(_ load: @escaping @Sendable () throws -> T) async throws -> T {
+    try await Task.detached(priority: .utility, operation: load).value
 }

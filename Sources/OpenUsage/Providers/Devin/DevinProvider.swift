@@ -34,16 +34,35 @@ final class DevinProvider: ProviderRuntime {
     }
 
     func hasLocalCredentials() async -> Bool {
-        // Same sources as `refresh()`: the credentials file, then the Devin app's stored auth. Both are
-        // blocking disk/SQLite reads, so both run off the main actor (see `loadOffMainActor`).
-        if await loadOffMainActor({ [authStore] in authStore.loadCredentialsFile() }) != nil { return true }
-        return await loadOffMainActor { [authStore] in authStore.loadAppAuth() } != nil
+        // A proven miss across both sources is absent. Any read/parse failure counts conservatively so
+        // one-shot detection enables Devin and `refresh()` can show the repairable error.
+        do {
+            if try await loadOffMainActor({ [authStore] in try authStore.loadCredentialsFile() }) != nil {
+                return true
+            }
+        } catch {
+            logUnexpectedProbeError(error, source: "CLI credential file")
+            return true
+        }
+        do {
+            return try await loadOffMainActor { [authStore] in try authStore.loadAppAuth() } != nil
+        } catch {
+            logUnexpectedProbeError(error, source: "app credential database")
+            return true
+        }
     }
 
     func refresh() async -> ProviderSnapshot {
         var sawAPIKey = false
         var sawAuthFailure = false
-        let credentials = await loadOffMainActor { [authStore] in authStore.loadCredentialsFile() }
+        var firstLoadError: DevinAuthError?
+        let credentials: DevinAuth?
+        do {
+            credentials = try await loadOffMainActor { [authStore] in try authStore.loadCredentialsFile() }
+        } catch {
+            firstLoadError = loadError(error, source: "CLI credential file")
+            credentials = nil
+        }
 
         if let credentials {
             sawAPIKey = true
@@ -57,7 +76,15 @@ final class DevinProvider: ProviderRuntime {
             }
         }
 
-        let appAuth = await loadOffMainActor({ [authStore] in authStore.loadAppAuth() })
+        let appAuth: DevinAuth?
+        do {
+            appAuth = try await loadOffMainActor { [authStore] in try authStore.loadAppAuth() }
+        } catch {
+            if firstLoadError == nil {
+                firstLoadError = loadError(error, source: "app credential database")
+            }
+            appAuth = nil
+        }
         if let appAuth,
            credentials == nil || shouldAttemptAppAuth(appAuth, after: credentials) {
             sawAPIKey = true
@@ -76,6 +103,9 @@ final class DevinProvider: ProviderRuntime {
         }
         if sawAPIKey {
             return ProviderSnapshot.error(provider: provider, error: DevinUsageError.quotaUnavailable)
+        }
+        if let firstLoadError {
+            return ProviderSnapshot.error(provider: provider, error: firstLoadError)
         }
         return ProviderSnapshot.error(provider: provider, error: DevinAuthError.notLoggedIn)
     }
@@ -104,6 +134,17 @@ final class DevinProvider: ProviderRuntime {
 
     private func snapshot(from mapped: DevinMappedUsage) -> ProviderSnapshot {
         ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines, refreshedAt: now())
+    }
+
+    private func loadError(_ error: Error, source: String) -> DevinAuthError {
+        if let authError = error as? DevinAuthError { return authError }
+        AppLog.error(LogTag.auth("devin"), "unexpected \(source) failure: \(error.localizedDescription)")
+        return .credentialStoreUnreadable
+    }
+
+    private func logUnexpectedProbeError(_ error: Error, source: String) {
+        guard !(error is DevinAuthError) else { return }
+        AppLog.error(LogTag.auth("devin"), "unexpected \(source) probe failure: \(error.localizedDescription)")
     }
 }
 

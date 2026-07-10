@@ -2,7 +2,7 @@ import XCTest
 @testable import OpenUsage
 
 final class DevinAuthStoreTests: XCTestCase {
-    func testParsesCredentialsTomlAndCleansServerURL() {
+    func testParsesCredentialsTomlAndCleansServerURL() throws {
         let store = DevinAuthStore(
             files: FakeFiles([
                 DevinAuthStore.credentialsPath: """
@@ -13,13 +13,13 @@ final class DevinAuthStoreTests: XCTestCase {
             sqlite: FakeSQLite()
         )
 
-        let auth = store.loadCredentialsFile()
+        let auth = try store.loadCredentialsFile()
 
         XCTAssertEqual(auth?.apiKey, "devin-session-token$cli")
         XCTAssertEqual(auth?.apiServerUrl, "https://server.codeium.test")
     }
 
-    func testIgnoresPlaintextServerURL() {
+    func testRejectsPlaintextServerURLInsteadOfFallingBackToProduction() {
         let store = DevinAuthStore(
             files: FakeFiles([
                 DevinAuthStore.credentialsPath: """
@@ -30,21 +30,71 @@ final class DevinAuthStoreTests: XCTestCase {
             sqlite: FakeSQLite()
         )
 
-        let auth = store.loadCredentialsFile()
-
-        XCTAssertEqual(auth?.apiKey, "devin-session-token$cli")
-        XCTAssertNil(auth?.apiServerUrl)
+        XCTAssertThrowsError(try store.loadCredentialsFile()) { error in
+            XCTAssertEqual(error as? DevinAuthError, .invalidCredentialData)
+        }
     }
 
-    func testReadsAppAuthFromSQLiteState() {
+    func testReadsAppAuthFromSQLiteState() throws {
         let sqlite = FakeSQLite(value: #"{"apiKey":"devin-session-token$app"}"#)
         let store = DevinAuthStore(files: FakeFiles(), sqlite: sqlite)
 
-        let auth = store.loadAppAuth()
+        let auth = try store.loadAppAuth()
 
         XCTAssertEqual(auth?.apiKey, "devin-session-token$app")
         XCTAssertEqual(sqlite.lastPath, DevinAuthStore.stateDBPath)
         XCTAssertEqual(sqlite.lastSQL?.contains("windsurfAuthStatus"), true)
+    }
+
+    func testMissingCredentialSourcesAreProvenAbsent() throws {
+        let store = DevinAuthStore(files: FakeFiles(), sqlite: FakeSQLite())
+
+        XCTAssertNil(try store.loadCredentialsFile())
+        XCTAssertNil(try store.loadAppAuth())
+    }
+
+    func testUnreadableCredentialFileThrowsCredentialStoreUnreadable() {
+        let store = DevinAuthStore(files: DevinUnreadableFiles(), sqlite: FakeSQLite())
+
+        XCTAssertThrowsError(try store.loadCredentialsFile()) { error in
+            XCTAssertEqual(error as? DevinAuthError, .credentialStoreUnreadable)
+        }
+    }
+
+    func testMalformedCredentialFileThrowsInvalidCredentialData() {
+        let store = DevinAuthStore(
+            files: FakeFiles([DevinAuthStore.credentialsPath: "windsurf_api_key = \"unterminated"]),
+            sqlite: FakeSQLite()
+        )
+
+        XCTAssertThrowsError(try store.loadCredentialsFile()) { error in
+            XCTAssertEqual(error as? DevinAuthError, .invalidCredentialData)
+        }
+    }
+
+    func testUnreadableAppDatabaseThrowsCredentialStoreUnreadable() {
+        let store = DevinAuthStore(
+            files: FakeFiles(),
+            sqlite: FakeSQLite(queryError: CredentialBoundaryTestError.unreadable)
+        )
+
+        XCTAssertThrowsError(try store.loadAppAuth()) { error in
+            XCTAssertEqual(error as? DevinAuthError, .credentialStoreUnreadable)
+        }
+    }
+
+    func testMalformedAppDatabaseValueThrowsInvalidCredentialData() {
+        let store = DevinAuthStore(files: FakeFiles(), sqlite: FakeSQLite(value: "{ not-json"))
+
+        XCTAssertThrowsError(try store.loadAppAuth()) { error in
+            XCTAssertEqual(error as? DevinAuthError, .invalidCredentialData)
+        }
+    }
+
+    func testSignedOutAppDatabaseValueIsAbsent() throws {
+        let store = DevinAuthStore(files: FakeFiles(), sqlite: FakeSQLite(value: #"{"signedIn":false}"#))
+
+        XCTAssertNil(try store.loadAppAuth())
     }
 }
 
@@ -196,6 +246,84 @@ final class DevinProviderTests: XCTestCase {
         XCTAssertEqual(snapshot.errorCategory, .notLoggedIn)
     }
 
+    func testCredentialProbeIsFalseOnlyForProvenAbsence() async {
+        let absent = DevinProvider(
+            authStore: DevinAuthStore(files: FakeFiles(), sqlite: FakeSQLite()),
+            usageClient: DevinUsageClient(http: QueueHTTPClient())
+        )
+        let unreadableFile = DevinProvider(
+            authStore: DevinAuthStore(files: DevinUnreadableFiles(), sqlite: FakeSQLite()),
+            usageClient: DevinUsageClient(http: QueueHTTPClient())
+        )
+        let unreadableDatabase = DevinProvider(
+            authStore: DevinAuthStore(
+                files: FakeFiles(),
+                sqlite: FakeSQLite(queryError: CredentialBoundaryTestError.unreadable)
+            ),
+            usageClient: DevinUsageClient(http: QueueHTTPClient())
+        )
+
+        let absentDetected = await absent.hasLocalCredentials()
+        let unreadableFileDetected = await unreadableFile.hasLocalCredentials()
+        let unreadableDatabaseDetected = await unreadableDatabase.hasLocalCredentials()
+        XCTAssertFalse(absentDetected)
+        XCTAssertTrue(unreadableFileDetected)
+        XCTAssertTrue(unreadableDatabaseDetected)
+    }
+
+    func testRefreshSurfacesUnreadableCredentialStoreWhenNoFallbackLoads() async {
+        let provider = DevinProvider(
+            authStore: DevinAuthStore(files: DevinUnreadableFiles(), sqlite: FakeSQLite()),
+            usageClient: DevinUsageClient(http: QueueHTTPClient())
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(errorText(snapshot.lines), DevinAuthError.credentialStoreUnreadable.localizedDescription)
+        XCTAssertEqual(snapshot.errorCategory, .credentialAccess)
+    }
+
+    func testRefreshSurfacesMalformedCredentialDataWhenNoFallbackLoads() async {
+        let provider = DevinProvider(
+            authStore: DevinAuthStore(
+                files: FakeFiles([DevinAuthStore.credentialsPath: "windsurf_api_key = \"unterminated"]),
+                sqlite: FakeSQLite()
+            ),
+            usageClient: DevinUsageClient(http: QueueHTTPClient())
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(errorText(snapshot.lines), DevinAuthError.invalidCredentialData.localizedDescription)
+        XCTAssertEqual(snapshot.errorCategory, .authInvalid)
+    }
+
+    func testRefreshFallsBackToAppStateAfterMalformedCLIFile() async throws {
+        let httpClient = QueueHTTPClient(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: try makeUserStatusBody(planName: "Teams"))
+        ])
+        let provider = DevinProvider(
+            authStore: DevinAuthStore(
+                files: FakeFiles([
+                    DevinAuthStore.credentialsPath: """
+                    windsurf_api_key = "devin-session-token$cli"
+                    api_server_url = "http://unsafe.example"
+                    """
+                ]),
+                sqlite: FakeSQLite(value: #"{"apiKey":"devin-session-token$app"}"#)
+            ),
+            usageClient: DevinUsageClient(http: httpClient)
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(snapshot.plan, "Teams")
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertEqual(httpClient.requests.map(\.url.absoluteString), [
+            "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
+        ])
+    }
+
     private func errorText(_ lines: [MetricLine]) -> String? {
         guard case .badge(_, let text, _, _) = lines.first else {
             return nil
@@ -231,20 +359,34 @@ private func requestBody(_ request: HTTPRequest?) throws -> [String: Any] {
 
 private final class FakeSQLite: SQLiteAccessing, @unchecked Sendable {
     var value: String?
+    var queryError: Error?
     var lastPath: String?
     var lastSQL: String?
 
-    init(value: String? = nil) {
+    init(value: String? = nil, queryError: Error? = nil) {
         self.value = value
+        self.queryError = queryError
     }
 
     func queryValue(path: String, sql: String) throws -> String? {
         lastPath = path
         lastSQL = sql
+        if let queryError { throw queryError }
         return value
     }
 
     func execute(path: String, sql: String) throws {}
+}
+
+private struct DevinUnreadableFiles: TextFileAccessing {
+    func exists(_ path: String) -> Bool { true }
+    func readText(_ path: String) throws -> String { throw CredentialBoundaryTestError.unreadable }
+    func writeText(_ path: String, _ text: String) throws {}
+    func remove(_ path: String) throws {}
+}
+
+private enum CredentialBoundaryTestError: Error {
+    case unreadable
 }
 
 private final class QueueHTTPClient: HTTPClient, @unchecked Sendable {

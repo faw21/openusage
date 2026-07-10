@@ -19,9 +19,13 @@ Checked in this order — whichever works first wins:
 2. The Devin app's local state database
 
 If the CLI credentials fail but the app is signed in with a different account, the app's auth is used instead.
+An `api_server_url` in the CLI file must be a valid HTTPS URL; OpenUsage reports an invalid credential
+file rather than silently sending that key to the default server.
 
 ## Troubleshooting
 
+- **"Couldn't read Devin credentials"** — OpenUsage found the CLI credential file or Devin app database but could not read it. Check access to those files, then refresh.
+- **"Devin credentials are invalid"** — a stored credential payload is malformed. Run `devin auth login`, or sign in to the Devin app again.
 - **"Not logged in"** — run `devin auth login`, or sign into the Devin app, then refresh.
 - **Weekly shows the daily figure** — when Devin reports no separate weekly quota, the daily quota is shown in the Weekly row so it stays meaningful.
 

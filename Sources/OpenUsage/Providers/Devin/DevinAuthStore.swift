@@ -7,11 +7,17 @@ struct DevinAuth: Hashable, Sendable {
 
 enum DevinAuthError: Error, LocalizedError, Equatable {
     case notLoggedIn
+    case credentialStoreUnreadable
+    case invalidCredentialData
 
     var errorDescription: String? {
         switch self {
         case .notLoggedIn:
             return "Run devin auth login or sign in to Devin and try again."
+        case .credentialStoreUnreadable:
+            return "Couldn't read Devin credentials. Check access to the Devin credential file and app data, then try again."
+        case .invalidCredentialData:
+            return "Devin credentials are invalid. Run `devin auth login` or sign in to Devin again."
         }
     }
 }
@@ -32,30 +38,66 @@ struct DevinAuthStore: Sendable {
         self.sqlite = sqlite
     }
 
-    func loadCredentialsFile() -> DevinAuth? {
-        guard files.exists(Self.credentialsPath),
-              let text = try? files.readText(Self.credentialsPath),
-              let apiKey = Self.readTomlString(text, key: "windsurf_api_key")
-        else {
-            return nil
+    func loadCredentialsFile() throws -> DevinAuth? {
+        let text: String
+        do {
+            guard let stored = try files.readTextIfPresent(Self.credentialsPath) else { return nil }
+            text = stored
+        } catch {
+            AppLog.error(LogTag.auth("devin"), "CLI credential file read failed: \(error.localizedDescription)")
+            throw DevinAuthError.credentialStoreUnreadable
         }
 
-        return DevinAuth(
-            apiKey: apiKey,
-            apiServerUrl: Self.cleanAPIServerURL(Self.readTomlString(text, key: "api_server_url"))
-        )
+        do {
+            guard let apiKey = try Self.readTomlString(text, key: "windsurf_api_key") else {
+                throw DevinAuthError.invalidCredentialData
+            }
+            let rawServerURL = try Self.readTomlString(text, key: "api_server_url")
+            let serverURL: String?
+            if let rawServerURL {
+                guard let cleaned = Self.cleanAPIServerURL(rawServerURL) else {
+                    throw DevinAuthError.invalidCredentialData
+                }
+                serverURL = cleaned
+            } else {
+                serverURL = nil
+            }
+            return DevinAuth(apiKey: apiKey, apiServerUrl: serverURL)
+        } catch {
+            AppLog.error(LogTag.auth("devin"), "CLI credential file is malformed")
+            throw DevinAuthError.invalidCredentialData
+        }
     }
 
-    func loadAppAuth() -> DevinAuth? {
+    func loadAppAuth() throws -> DevinAuth? {
         let sql = "SELECT value FROM ItemTable WHERE key = 'windsurfAuthStatus' LIMIT 1"
-        guard let value = try? sqlite.queryValue(path: Self.stateDBPath, sql: sql),
-              let valueData = value.data(using: .utf8),
-              let auth = (try? JSONSerialization.jsonObject(with: valueData)) as? [String: Any],
-              let apiKey = (auth["apiKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !apiKey.isEmpty
-        else {
-            return nil
+        let value: String?
+        do {
+            value = try sqlite.queryValue(path: Self.stateDBPath, sql: sql)
+        } catch {
+            AppLog.error(LogTag.auth("devin"), "app credential database read failed: \(error.localizedDescription)")
+            throw DevinAuthError.credentialStoreUnreadable
         }
+        guard let value else { return nil }
+
+        let auth: [String: Any]
+        do {
+            guard let object = try JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any] else {
+                throw DevinAuthError.invalidCredentialData
+            }
+            auth = object
+        } catch {
+            AppLog.error(LogTag.auth("devin"), "app credential database value is malformed")
+            throw DevinAuthError.invalidCredentialData
+        }
+
+        guard let rawAPIKey = auth["apiKey"] else { return nil }
+        guard let apiKeyString = rawAPIKey as? String else {
+            AppLog.error(LogTag.auth("devin"), "app credential database apiKey has an invalid type")
+            throw DevinAuthError.invalidCredentialData
+        }
+        let apiKey = apiKeyString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else { return nil }
 
         return DevinAuth(apiKey: apiKey, apiServerUrl: nil)
     }
@@ -66,7 +108,9 @@ struct DevinAuthStore: Sendable {
 
     static func cleanAPIServerURL(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              trimmed.hasPrefix("https://")
+              let url = URL(string: trimmed),
+              url.scheme?.lowercased() == "https",
+              url.host?.isEmpty == false
         else {
             return nil
         }
@@ -74,7 +118,7 @@ struct DevinAuthStore: Sendable {
         return withoutTrailingSlashes.isEmpty ? nil : withoutTrailingSlashes
     }
 
-    static func readTomlString(_ text: String, key: String) -> String? {
+    static func readTomlString(_ text: String, key: String) throws -> String? {
         for line in text.split(whereSeparator: \.isNewline) {
             let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2,
@@ -84,16 +128,20 @@ struct DevinAuthStore: Sendable {
             }
 
             var value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else { return nil }
+            guard !value.isEmpty else { throw DevinAuthError.invalidCredentialData }
 
             if value.first == "\"" || value.first == "'" {
-                return readQuotedTomlString(value)
+                guard let quoted = readQuotedTomlString(value) else {
+                    throw DevinAuthError.invalidCredentialData
+                }
+                return quoted
             }
 
             if let comment = value.firstIndex(of: "#") {
                 value = value[..<comment].trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            return value.isEmpty ? nil : String(value)
+            guard !value.isEmpty else { throw DevinAuthError.invalidCredentialData }
+            return String(value)
         }
         return nil
     }

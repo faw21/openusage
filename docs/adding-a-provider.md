@@ -21,7 +21,12 @@ it once to turn on exactly the providers the user actually has (see `FirstRunSee
 installs probe it once on the first launch after your provider ships (see `NewProviderSeeder`) — so
 implementing it correctly is what gets the new provider auto-enabled for the users who actually have
 the tool (see [Which Providers Are On](provider-enablement.md)). Mirror the same credential sources
-`refresh()` reads, and run blocking loads via `loadOffMainActor`.
+`refresh()` reads, and run blocking loads via `loadOffMainActor`. The shared load must distinguish a
+credential that is genuinely absent from one that exists but cannot be read or parsed: return `nil` (or
+an empty candidate list) only for proven absence, and throw after logging a safe source-only diagnostic
+for unreadable or malformed data. Since detection runs once, `hasLocalCredentials()` returns `true`
+conservatively when that load throws; the provider is then enabled and its normal refresh shows the user
+the repairable error instead of silently leaving it off.
 
 ## The metric contract
 
@@ -54,8 +59,10 @@ factory only when there is no typed error, and never return stale or empty data 
    or in progress.
 2. **Create the module.** Add `Sources/OpenUsage/Providers/<Name>/` with the auth store, usage client, and
    mapper, conforming to `ProviderRuntime` — both `refresh()` and `hasLocalCredentials()` (the compiler
-   enforces the latter; there is no default). Implement `hasLocalCredentials()` as a null-check on the
-   same auth-store load `refresh()` starts with — don't write a second credential-reading path. Reuse the
+   enforces the latter; there is no default). Reuse the same throwing auth-store load in both paths — don't
+   write a second credential-reading path. A missing source returns no value; a present-but-unreadable or
+   malformed source logs and throws, which the nonthrowing probe maps to `true` conservatively while
+   `refresh()` maps it to a friendly typed error. Reuse the
    shared helpers in `Support/` (`ProviderParse` for JSON/number/percent parsing, `OpenUsageISO8601` for
    timestamps) instead of copying them.
 3. **Declare its widgets.** Expose the provider's metrics as `WidgetDescriptor`s using the factories in
