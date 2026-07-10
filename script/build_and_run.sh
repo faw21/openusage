@@ -26,7 +26,7 @@ MIN_SYSTEM_VERSION="15.0"
 APP_VERSION="0.7.0"
 APP_BUILD="0.7.0"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_DISPLAY.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -37,10 +37,30 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 RESOURCE_BUNDLE_NAME="${TARGET_NAME}_${TARGET_NAME}.bundle"
 ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.dev.entitlements.plist"
 
+matching_app_pids() {
+  local exact_path="${1:-}"
+  local pid executable
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    executable="$(ps -ww -p "$pid" -o comm= 2>/dev/null)" || continue
+    if [ -n "$exact_path" ]; then
+      [ "$executable" = "$exact_path" ] || continue
+    elif [[ "$executable" != *"/$APP_DISPLAY.app/Contents/MacOS/$TARGET_NAME" ]]; then
+      continue
+    fi
+    printf '%s\n' "$pid"
+  done < <(pgrep -x "$TARGET_NAME" || true)
+}
+
 wait_for_app_exit() {
-  pkill -x "$TARGET_NAME" >/dev/null 2>&1 || return 0
+  local pid pids
+  pids="$(matching_app_pids)"
+  [ -n "$pids" ] || return 0
+  while IFS= read -r pid; do
+    kill "$pid" >/dev/null 2>&1 || true
+  done <<<"$pids"
   for ((attempt = 0; attempt < 50; attempt++)); do
-    if ! pgrep -x "$TARGET_NAME" >/dev/null; then
+    if [ -z "$(matching_app_pids)" ]; then
       return 0
     fi
     sleep 0.1
@@ -51,7 +71,7 @@ wait_for_app_exit() {
 
 wait_for_app_launch() {
   for ((attempt = 0; attempt < 50; attempt++)); do
-    if pgrep -x "$TARGET_NAME" >/dev/null; then
+    if [ -n "$(matching_app_pids "$APP_BINARY")" ]; then
       echo "==> running"
       return 0
     fi

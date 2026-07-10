@@ -13,9 +13,10 @@ The project script owns the build/run loop. From the repo root:
 ./script/build_and_run.sh verify   # launch and confirm the process is running
 ```
 
-Every invocation asks any running `OpenUsage` process to exit and waits up to five seconds before
-rebuilding. `verify` also polls the new launch for up to five seconds. The script fails loudly if either
-lifecycle transition stalls.
+Every invocation asks any running `OpenUsage.app` process to exit and waits up to five seconds before
+rebuilding. `verify` also polls this worktree's staged app for up to five seconds. The script ignores
+unrelated commands that happen to be named `OpenUsage`, and fails loudly if either app lifecycle
+transition stalls.
 
 The script builds a signed app bundle under `dist/` and launches it in place — nothing is installed to
 `/Applications`. The dev build uses its own bundle id (`com.robinebers.openusage.dev`), so its app
