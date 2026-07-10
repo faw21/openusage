@@ -39,8 +39,13 @@ struct CodexAuthState: Hashable, Sendable {
     /// probe requires before fetching usage (an API-key-only auth.json can't serve the usage API).
     /// `hasLocalCredentials()`'s first-run detection checks this, so the two can never drift.
     var hasUsableAccessToken: Bool {
-        auth.tokens?.accessToken?.isEmpty == false
+        auth.tokens?.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
+}
+
+struct CodexAuthLoadResult: Sendable {
+    var candidates: [CodexAuthState]
+    var firstError: CodexAuthError?
 }
 
 enum CodexAuthError: Error, LocalizedError, Equatable {
@@ -50,6 +55,7 @@ enum CodexAuthError: Error, LocalizedError, Equatable {
     case tokenRevoked
     case tokenExpired
     case usageAPIKey
+    case credentialStoreUnreadable
     case invalidAuthPayload
 
     var errorDescription: String? {
@@ -66,16 +72,21 @@ enum CodexAuthError: Error, LocalizedError, Equatable {
             return "Token expired. Run `codex` to log in again."
         case .usageAPIKey:
             return "Usage not available for API key."
+        case .credentialStoreUnreadable:
+            return "Couldn't read Codex credentials. Check access to the Codex auth files and Keychain, then try again."
         case .invalidAuthPayload:
-            return "Codex auth data is invalid."
+            return "Codex credentials are invalid. Run `codex` to authenticate again."
         }
     }
 
+    /// Whether this error invalidates only the current credential candidate. The provider retains the
+    /// last fallback error, so an API-key-only setup still ends with `usageAPIKey`; it just no longer
+    /// prevents a later OAuth file or keychain candidate from being tried.
     var allowsAuthFallback: Bool {
         switch self {
-        case .sessionExpired, .tokenConflict, .tokenRevoked, .tokenExpired:
+        case .sessionExpired, .tokenConflict, .tokenRevoked, .tokenExpired, .usageAPIKey:
             return true
-        case .notLoggedIn, .usageAPIKey, .invalidAuthPayload:
+        case .notLoggedIn, .credentialStoreUnreadable, .invalidAuthPayload:
             return false
         }
     }
@@ -106,31 +117,65 @@ struct CodexAuthStore: Sendable {
         self.now = now
     }
 
+    /// Load every ordered file source without letting one broken file hide a valid sibling. The first
+    /// boundary error is retained for the provider to surface only when no valid source can be used.
+    func loadAuthResult() -> CodexAuthLoadResult {
+        var candidates: [CodexAuthState] = []
+        var firstError: CodexAuthError?
+        for path in authPaths() {
+            do {
+                if let candidate = try loadAuth(at: path) {
+                    candidates.append(candidate)
+                }
+            } catch let error as CodexAuthError {
+                if firstError == nil { firstError = error }
+            } catch {
+                AppLog.error(LogTag.auth("codex"), "unexpected auth file load failure")
+                if firstError == nil { firstError = .credentialStoreUnreadable }
+            }
+        }
+        return CodexAuthLoadResult(candidates: candidates, firstError: firstError)
+    }
+
+    /// Compatibility view used by parsing tests and callers that only need successfully loaded
+    /// candidates. Provider refresh/probe paths use `loadAuthResult()` so boundary errors are retained.
     func loadAuthCandidates() -> [CodexAuthState] {
-        authPaths().compactMap { loadAuth(at: $0) }
+        loadAuthResult().candidates
     }
 
     /// Reads the credential from a single on-disk auth file — the targeted counterpart to
     /// `loadKeychainAuth()`, used when reloading the exact source we already loaded from so we don't
-    /// re-scan every candidate path. Returns `nil` when the file is missing, unreadable, or doesn't
-    /// carry token-like auth.
-    func loadAuth(at path: String) -> CodexAuthState? {
-        guard files.exists(path),
-              let text = try? files.readText(path),
-              let auth = Self.parseAuth(text),
-              Self.hasTokenLikeAuth(auth)
-        else {
-            return nil
+    /// re-scan every candidate path. `nil` is reserved for a genuinely missing file; unreadable or
+    /// malformed credential material logs and throws a typed boundary error.
+    func loadAuth(at path: String) throws -> CodexAuthState? {
+        let text: String
+        do {
+            guard let stored = try files.readTextIfPresent(path) else { return nil }
+            text = stored
+        } catch {
+            AppLog.error(LogTag.auth("codex"), "auth file read failed")
+            throw CodexAuthError.credentialStoreUnreadable
+        }
+
+        guard let auth = Self.parseAuth(text), Self.hasTokenLikeAuth(auth) else {
+            AppLog.error(LogTag.auth("codex"), "auth file is malformed")
+            throw CodexAuthError.invalidAuthPayload
         }
         return CodexAuthState(auth: auth, source: .file(path: path))
     }
 
-    func loadKeychainAuth() -> CodexAuthState? {
-        guard let value = try? keychain.readGenericPassword(service: Self.keychainService),
-              let auth = Self.parseAuth(value),
-              Self.hasTokenLikeAuth(auth)
-        else {
-            return nil
+    func loadKeychainAuth() throws -> CodexAuthState? {
+        let value: String?
+        do {
+            value = try keychain.readGenericPassword(service: Self.keychainService)
+        } catch {
+            AppLog.error(LogTag.auth("codex"), "keychain credential read failed")
+            throw CodexAuthError.credentialStoreUnreadable
+        }
+        guard let value else { return nil }
+        guard let auth = Self.parseAuth(value), Self.hasTokenLikeAuth(auth) else {
+            AppLog.error(LogTag.auth("codex"), "keychain credential is malformed")
+            throw CodexAuthError.invalidAuthPayload
         }
         return CodexAuthState(auth: auth, source: .keychain)
     }
@@ -201,8 +246,8 @@ struct CodexAuthStore: Sendable {
     }
 
     static func hasTokenLikeAuth(_ auth: CodexAuth) -> Bool {
-        if auth.tokens?.accessToken?.isEmpty == false { return true }
-        if auth.apiKey?.isEmpty == false { return true }
+        if auth.tokens?.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { return true }
+        if auth.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { return true }
         return false
     }
 
@@ -217,4 +262,3 @@ private extension CodexAuthState.Source {
         return false
     }
 }
-

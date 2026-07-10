@@ -50,20 +50,27 @@ final class CodexProvider: ProviderRuntime {
     func hasLocalCredentials() async -> Bool {
         // Same sources as `refresh()`: auth.json candidates first, keychain as the fallback. Only a
         // usable access token counts (see `hasUsableAccessToken`) — an API-key-only auth.json can't
-        // serve the usage API, so seeding it on would just show an error row.
-        let fileCandidates = authStore.loadAuthCandidates()
-        if fileCandidates.contains(where: \.hasUsableAccessToken) {
+        // serve the usage API, so that valid syntax alone does not seed the provider. A boundary error
+        // is different: detection is one-shot, so an indeterminate present source counts conservatively.
+        let fileLoad = await loadOffMainActor { [authStore] in authStore.loadAuthResult() }
+        if fileLoad.candidates.contains(where: \.hasUsableAccessToken) {
             return true
         }
-        let keychain = await loadOffMainActor { [authStore] in authStore.loadKeychainAuth() }
-        return keychain?.hasUsableAccessToken == true
+        do {
+            let keychain = try await loadOffMainActor { [authStore] in try authStore.loadKeychainAuth() }
+            return keychain?.hasUsableAccessToken == true || fileLoad.firstError != nil
+        } catch {
+            logUnexpectedBoundaryError(error, source: "keychain credential probe")
+            return true
+        }
     }
 
     func refresh() async -> ProviderSnapshot {
-        let fileCandidates = authStore.loadAuthCandidates()
+        let fileLoad = await loadOffMainActor { [authStore] in authStore.loadAuthResult() }
         var lastFallbackError: Error?
+        var firstLoadError = fileLoad.firstError
 
-        for candidate in fileCandidates {
+        for candidate in fileLoad.candidates {
             do {
                 return try await probe(authState: candidate)
             } catch let error as CodexAuthError where error.allowsAuthFallback {
@@ -74,7 +81,16 @@ final class CodexProvider: ProviderRuntime {
             }
         }
 
-        if let keychainCandidate = await loadOffMainActor({ [authStore] in authStore.loadKeychainAuth() }) {
+        let keychainCandidate: CodexAuthState?
+        do {
+            keychainCandidate = try await loadOffMainActor { [authStore] in try authStore.loadKeychainAuth() }
+        } catch {
+            if firstLoadError == nil {
+                firstLoadError = boundaryError(error, source: "keychain credential load")
+            }
+            keychainCandidate = nil
+        }
+        if let keychainCandidate {
             do {
                 return try await probe(authState: keychainCandidate)
             } catch {
@@ -85,13 +101,18 @@ final class CodexProvider: ProviderRuntime {
         if let lastFallbackError {
             return ProviderSnapshot.error(provider: provider, error: lastFallbackError)
         }
+        if let firstLoadError {
+            return ProviderSnapshot.error(provider: provider, error: firstLoadError)
+        }
         return ProviderSnapshot.error(provider: provider, error: CodexAuthError.notLoggedIn)
     }
 
     private func probe(authState initialState: CodexAuthState) async throws -> ProviderSnapshot {
         var authState = initialState
-        guard var accessToken = authState.auth.tokens?.accessToken, !accessToken.isEmpty else {
-            if authState.auth.apiKey?.isEmpty == false {
+        guard var accessToken = authState.auth.tokens?.accessToken?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !accessToken.isEmpty else {
+            if authState.auth.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
                 throw CodexAuthError.usageAPIKey
             }
             throw CodexAuthError.notLoggedIn
@@ -101,10 +122,18 @@ final class CodexProvider: ProviderRuntime {
             // The `codex` CLI may have rotated the token on disk since we loaded it. Re-read the live
             // credential first and adopt its (newer) access token — refreshing our stale copy would send
             // an already-rotated refresh_token and trip `refresh_token_reused` (issue #516).
-            if let live = reloadLiveAuth(source: authState.source),
-               let liveToken = live.auth.tokens?.accessToken, !liveToken.isEmpty {
-                authState = live
-                accessToken = liveToken
+            do {
+                if let live = try await reloadLiveAuth(source: authState.source),
+                   let liveToken = live.auth.tokens?.accessToken?
+                       .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !liveToken.isEmpty {
+                    authState = live
+                    accessToken = liveToken
+                }
+            } catch {
+                // The candidate already loaded successfully, so this later re-read failure is not the
+                // terminal credential boundary. The auth store logged it; continue with the valid
+                // in-memory candidate and let refresh/usage return the actionable outcome.
             }
         }
 
@@ -183,13 +212,24 @@ final class CodexProvider: ProviderRuntime {
     /// token the `codex` CLI rotated out-of-band is picked up before we attempt our own refresh. Reads
     /// only that one source — matching how `codex` reads the single `auth.json` from `CODEX_HOME` —
     /// rather than re-scanning every candidate path.
-    private func reloadLiveAuth(source: CodexAuthState.Source) -> CodexAuthState? {
+    private func reloadLiveAuth(source: CodexAuthState.Source) async throws -> CodexAuthState? {
         switch source {
         case .file(let path):
-            return authStore.loadAuth(at: path)
+            return try await loadOffMainActor { [authStore] in try authStore.loadAuth(at: path) }
         case .keychain:
-            return authStore.loadKeychainAuth()
+            return try await loadOffMainActor { [authStore] in try authStore.loadKeychainAuth() }
         }
+    }
+
+    private func boundaryError(_ error: Error, source: String) -> CodexAuthError {
+        if let authError = error as? CodexAuthError { return authError }
+        AppLog.error(LogTag.auth("codex"), "unexpected \(source) failure")
+        return .credentialStoreUnreadable
+    }
+
+    private func logUnexpectedBoundaryError(_ error: Error, source: String) {
+        guard !(error is CodexAuthError) else { return }
+        AppLog.error(LogTag.auth("codex"), "unexpected \(source) failure")
     }
 
     private func refreshAccessToken(authState: inout CodexAuthState, refreshToken: String) async throws -> String {

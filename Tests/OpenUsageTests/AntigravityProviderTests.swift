@@ -252,11 +252,11 @@ final class AntigravityProviderTests: XCTestCase {
         XCTAssertEqual(store(expiresInSeconds: 7200).loadCachedToken(), "ya29.cached")
     }
 
-    func testLoadKeychainTokenThroughStore() {
+    func testLoadKeychainTokenThroughStore() throws {
         let inner = #"{"token":{"access_token":"ya29.kc","refresh_token":"1//r"}}"#
         let wrapped = "go-keyring-base64:" + Data(inner.utf8).base64EncodedString()
         let store = AntigravityAuthStore(keychain: FakeKeychain(wrapped), files: FakeFiles())
-        let token = store.loadKeychainToken()
+        let token = try store.loadKeychainToken()
         XCTAssertEqual(token?.accessToken, "ya29.kc")
         XCTAssertEqual(token?.refreshToken, "1//r")
     }

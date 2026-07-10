@@ -77,6 +77,7 @@ extension CodexAuthError: CategorizedError {
         case .notLoggedIn: .notLoggedIn
         case .sessionExpired, .tokenConflict, .tokenRevoked, .tokenExpired: .authExpired
         case .usageAPIKey: .notAvailable
+        case .credentialStoreUnreadable: .credentialAccess
         case .invalidAuthPayload: .authInvalid
         }
     }
@@ -158,6 +159,8 @@ extension CopilotAuthError: CategorizedError {
         switch self {
         case .notLoggedIn: .notLoggedIn
         case .tokenInvalid: .authExpired
+        case .credentialStoreUnreadable: .credentialAccess
+        case .invalidCredentialData: .authInvalid
         }
     }
 }
@@ -226,6 +229,8 @@ extension AntigravityError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {
         case .notSignedIn: .notLoggedIn
+        case .credentialStoreUnreadable: .credentialAccess
+        case .invalidCredentialData: .authInvalid
         case .authExpired: .authExpired
         case .unavailable: .network
         }

@@ -34,11 +34,18 @@ struct AntigravityAuthStore: Sendable {
     }
 
     /// Blocking keychain read — call off the main actor.
-    func loadKeychainToken() -> AntigravityKeychainToken? {
-        guard let raw = try? keychain.readGenericPassword(service: Self.keychainService, account: Self.keychainAccount),
-              let token = Self.extractToken(fromKeychainRaw: raw)
-        else {
-            return nil
+    func loadKeychainToken() throws -> AntigravityKeychainToken? {
+        let raw: String?
+        do {
+            raw = try keychain.readGenericPassword(service: Self.keychainService, account: Self.keychainAccount)
+        } catch {
+            AppLog.error(LogTag.auth("antigravity"), "keychain credential read failed")
+            throw AntigravityError.credentialStoreUnreadable
+        }
+        guard let raw else { return nil }
+        guard let token = Self.extractToken(fromKeychainRaw: raw) else {
+            AppLog.error(LogTag.auth("antigravity"), "keychain credential is malformed")
+            throw AntigravityError.invalidCredentialData
         }
         return token
     }
@@ -59,16 +66,28 @@ struct AntigravityAuthStore: Sendable {
     func loadCachedToken() -> String? {
         // Require at least `refreshBuffer` of life left, matching `isUsable(expiry:)` for the keychain
         // token — a near-expiry cached token would otherwise yield a near-certain 401 and a wasteful
-        // extra refresh.
-        guard files.exists(Self.cachePath),
-              let text = try? files.readText(Self.cachePath),
-              let data = text.data(using: .utf8),
-              let cached = try? JSONDecoder().decode(CachedToken.self, from: data),
-              cached.expiresAtMs > (now().timeIntervalSince1970 + Self.refreshBuffer) * 1000
-        else {
+        // extra refresh. This is OpenUsage's own best-effort cache, not the primary credential store:
+        // corruption is logged and ignored, while an expired entry is a normal silent cache miss.
+        let text: String
+        do {
+            guard let stored = try files.readTextIfPresent(Self.cachePath) else { return nil }
+            text = stored
+        } catch {
+            AppLog.warn(LogTag.auth("antigravity"), "refreshed-token cache read failed; ignoring it")
             return nil
         }
-        return cached.accessToken.nilIfEmpty
+        guard let cached = try? JSONDecoder().decode(CachedToken.self, from: Data(text.utf8)) else {
+            AppLog.warn(LogTag.auth("antigravity"), "refreshed-token cache is malformed; ignoring it")
+            return nil
+        }
+        guard cached.expiresAtMs > (now().timeIntervalSince1970 + Self.refreshBuffer) * 1000 else {
+            return nil
+        }
+        guard let token = cached.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
+            AppLog.warn(LogTag.auth("antigravity"), "refreshed-token cache has no usable token; ignoring it")
+            return nil
+        }
+        return token
     }
 
     func cacheToken(_ accessToken: String, expiresIn: Double) {
@@ -92,14 +111,20 @@ struct AntigravityAuthStore: Sendable {
     static func extractToken(fromKeychainRaw raw: String) -> AntigravityKeychainToken? {
         guard let text = ProviderParse.unwrapGoKeyring(raw) else { return nil }
 
-        if let data = text.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) {
+        if let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) {
             if let dict = json as? [String: Any] {
                 return tokenFromObject(dict)
             }
             if let string = (json as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty {
                 return AntigravityKeychainToken(accessToken: string, refreshToken: nil, expiry: nil)
             }
+            return nil
+        }
+
+        // A value that looks like JSON but failed to parse is broken structured credential material,
+        // not a raw bearer token.
+        if text.hasPrefix("{") || text.hasPrefix("[") {
+            return nil
         }
 
         if text.hasPrefix("Bearer ") {

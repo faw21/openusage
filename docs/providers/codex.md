@@ -25,6 +25,8 @@ Today / Yesterday / Last 30 Days are computed **locally**: OpenUsage reads the C
 ## Troubleshooting
 
 - **"Not logged in"** — run `codex` and sign in, then refresh.
+- **"Couldn't read Codex credentials"** — OpenUsage found an auth file or Keychain source but macOS could not read it. Check the file permissions and that Keychain is unlocked, then refresh.
+- **"Codex credentials are invalid"** — an auth file or Keychain value is present but malformed. Run `codex` and sign in again to replace it.
 - **API-key-only setups** can't read subscription usage — sign in with your ChatGPT account instead.
 - **Spend tiles show "No data"** — OpenUsage found no Codex session logs in the last 30 days. If your Codex home lives somewhere custom, set `CODEX_HOME` so both the Codex CLI and OpenUsage look in the same place.
 

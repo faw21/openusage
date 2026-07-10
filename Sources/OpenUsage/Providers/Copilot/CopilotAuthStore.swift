@@ -5,9 +5,16 @@ struct CopilotToken: Hashable, Sendable {
     var value: String
 }
 
+struct CopilotAuthLoadResult: Sendable {
+    var token: CopilotToken?
+    var firstError: CopilotAuthError?
+}
+
 enum CopilotAuthError: Error, LocalizedError, Equatable {
     case notLoggedIn
     case tokenInvalid
+    case credentialStoreUnreadable
+    case invalidCredentialData
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +22,10 @@ enum CopilotAuthError: Error, LocalizedError, Equatable {
             return "Sign in to GitHub Copilot in your editor, or run gh auth login, and try again."
         case .tokenInvalid:
             return "GitHub token invalid or expired. Re-authenticate (gh auth login) and try again."
+        case .credentialStoreUnreadable:
+            return "Couldn't read GitHub Copilot credentials. Check access to your editor and GitHub CLI credentials, then try again."
+        case .invalidCredentialData:
+            return "GitHub Copilot credentials are invalid. Sign in to Copilot in your editor or run `gh auth login` again."
         }
     }
 }
@@ -43,62 +54,146 @@ struct CopilotAuthStore: Sendable {
         self.keychain = keychain
     }
 
-    /// First non-empty source wins. Blocking (Keychain) — call off the main actor.
+    /// First non-empty source wins. Broken sources are retained as a deferred error while later
+    /// siblings are tried; the provider surfaces that error only when no valid token loads.
+    /// Blocking (files + Keychain) — call off the main actor.
+    func loadTokenResult() -> CopilotAuthLoadResult {
+        var firstError: CopilotAuthError?
+
+        do {
+            if let token = try loadFromEditorConfig() {
+                return CopilotAuthLoadResult(token: token, firstError: nil)
+            }
+        } catch let error as CopilotAuthError {
+            firstError = error
+        } catch {
+            AppLog.error(LogTag.auth("copilot"), "unexpected editor credential load failure")
+            firstError = .credentialStoreUnreadable
+        }
+
+        var ghConfig: GhConfig?
+        do {
+            ghConfig = try loadGhConfig()
+            if let token = ghConfig?.token {
+                return CopilotAuthLoadResult(token: token, firstError: nil)
+            }
+        } catch let error as CopilotAuthError {
+            if firstError == nil { firstError = error }
+        } catch {
+            AppLog.error(LogTag.auth("copilot"), "unexpected GitHub CLI credential load failure")
+            if firstError == nil { firstError = .credentialStoreUnreadable }
+        }
+
+        do {
+            if let token = try loadFromGhKeychain(account: ghConfig?.username) {
+                return CopilotAuthLoadResult(token: token, firstError: nil)
+            }
+        } catch let error as CopilotAuthError {
+            if firstError == nil { firstError = error }
+        } catch {
+            AppLog.error(LogTag.auth("copilot"), "unexpected keychain credential load failure")
+            if firstError == nil { firstError = .credentialStoreUnreadable }
+        }
+
+        return CopilotAuthLoadResult(token: nil, firstError: firstError)
+    }
+
+    /// Compatibility view for callers/tests that only need a successfully loaded token.
     func loadToken() -> CopilotToken? {
-        loadFromEditorConfig() ?? loadFromGhConfig() ?? loadFromGhKeychain()
+        loadTokenResult().token
     }
 
     // MARK: - Sources
 
-    func loadFromEditorConfig() -> CopilotToken? {
+    func loadFromEditorConfig() throws -> CopilotToken? {
+        var firstError: CopilotAuthError?
         for path in [Self.editorAppsPath, Self.editorHostsPath] {
-            guard files.exists(path),
-                  let text = try? files.readText(path),
-                  let token = Self.oauthToken(fromEditorJSON: text)
-            else {
+            let text: String
+            do {
+                guard let stored = try files.readTextIfPresent(path) else { continue }
+                text = stored
+            } catch {
+                AppLog.error(LogTag.auth("copilot"), "editor credential file read failed")
+                if firstError == nil { firstError = .credentialStoreUnreadable }
                 continue
             }
-            return CopilotToken(value: token)
+
+            switch Self.editorToken(fromJSON: text) {
+            case .token(let token):
+                return CopilotToken(value: token)
+            case .compatibleAccountAbsent:
+                // Enterprise-only files are valid but cannot authenticate api.github.com. Keep
+                // walking to the older editor file, gh config, and Keychain.
+                continue
+            case .invalid:
+                AppLog.error(LogTag.auth("copilot"), "editor credential file is malformed")
+                if firstError == nil { firstError = .invalidCredentialData }
+            }
         }
+        if let firstError { throw firstError }
         return nil
     }
 
-    func loadFromGhConfig() -> CopilotToken? {
-        guard files.exists(Self.ghHostsPath),
-              let text = try? files.readText(Self.ghHostsPath),
-              let token = Self.yamlValue(text, key: "oauth_token")
-        else {
-            return nil
-        }
-        return CopilotToken(value: token)
+    private struct GhConfig {
+        var token: CopilotToken?
+        var username: String?
     }
 
-    func loadFromGhKeychain() -> CopilotToken? {
-        guard let raw = readGhKeychainRaw(),
-              let token = ProviderParse.unwrapGoKeyring(raw)
-        else {
-            return nil
+    private func loadGhConfig() throws -> GhConfig? {
+        let text: String
+        do {
+            guard let stored = try files.readTextIfPresent(Self.ghHostsPath) else { return nil }
+            text = stored
+        } catch {
+            AppLog.error(LogTag.auth("copilot"), "GitHub CLI credential file read failed")
+            throw CopilotAuthError.credentialStoreUnreadable
         }
-        return CopilotToken(value: token)
+
+        guard Self.isPlausibleHostsYAML(text) else {
+            AppLog.error(LogTag.auth("copilot"), "GitHub CLI credential file is malformed")
+            throw CopilotAuthError.invalidCredentialData
+        }
+
+        let token = Self.yamlValue(text, key: "oauth_token").map(CopilotToken.init(value:))
+        let username = Self.yamlValue(text, key: "user")
+        return GhConfig(token: token, username: username)
     }
 
-    private func readGhKeychainRaw() -> String? {
-        // `gh` stores its Keychain item under the GitHub username as the account. Read it scoped to that
-        // account when we can recover it from hosts.yml; otherwise fall back to a service-only lookup.
-        if let account = ghUsername(),
-           let raw = try? keychain.readGenericPassword(service: Self.ghKeychainService, account: account) {
-            return raw
-        }
-        return try? keychain.readGenericPassword(service: Self.ghKeychainService)
-    }
+    private func loadFromGhKeychain(account: String?) throws -> CopilotToken? {
+        var firstError: CopilotAuthError?
 
-    private func ghUsername() -> String? {
-        guard files.exists(Self.ghHostsPath),
-              let text = try? files.readText(Self.ghHostsPath)
-        else {
-            return nil
+        if let account {
+            do {
+                if let raw = try keychain.readGenericPassword(service: Self.ghKeychainService, account: account) {
+                    if let token = ProviderParse.unwrapGoKeyring(raw) {
+                        return CopilotToken(value: token)
+                    }
+                    AppLog.error(LogTag.auth("copilot"), "account-scoped keychain credential is malformed")
+                    firstError = .invalidCredentialData
+                }
+            } catch {
+                AppLog.error(LogTag.auth("copilot"), "account-scoped keychain credential read failed")
+                firstError = .credentialStoreUnreadable
+            }
         }
-        return Self.yamlValue(text, key: "user")
+
+        do {
+            if let raw = try keychain.readGenericPassword(service: Self.ghKeychainService) {
+                guard let token = ProviderParse.unwrapGoKeyring(raw) else {
+                    AppLog.error(LogTag.auth("copilot"), "keychain credential is malformed")
+                    throw CopilotAuthError.invalidCredentialData
+                }
+                return CopilotToken(value: token)
+            }
+        } catch let error as CopilotAuthError {
+            if firstError == nil { firstError = error }
+        } catch {
+            AppLog.error(LogTag.auth("copilot"), "keychain credential read failed")
+            if firstError == nil { firstError = .credentialStoreUnreadable }
+        }
+
+        if let firstError { throw firstError }
+        return nil
     }
 
     // MARK: - Parsing (pure)
@@ -109,10 +204,20 @@ struct CopilotAuthStore: Sendable {
     /// (e.g. GitHub Enterprise) must not be sent to api.github.com, and returning `nil` lets the chain
     /// fall through to gh config / keychain, which may hold a valid github.com token.
     static func oauthToken(fromEditorJSON text: String) -> String? {
+        guard case .token(let token) = editorToken(fromJSON: text) else { return nil }
+        return token
+    }
+
+    private enum EditorTokenParse {
+        case token(String)
+        case compatibleAccountAbsent
+        case invalid
+    }
+
+    private static func editorToken(fromJSON text: String) -> EditorTokenParse {
         guard let data = text.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return nil
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .invalid
         }
 
         func token(in value: Any?) -> String? {
@@ -125,10 +230,31 @@ struct CopilotAuthStore: Sendable {
             return token
         }
 
-        for (key, value) in object where key == "github.com" || key.hasPrefix("github.com:") {
-            if let token = token(in: value) { return token }
+        let compatible = object.filter { key, _ in key == "github.com" || key.hasPrefix("github.com:") }
+        guard !compatible.isEmpty else { return .compatibleAccountAbsent }
+        for (_, value) in compatible {
+            if let token = token(in: value) { return .token(token) }
         }
-        return nil
+        return .invalid
+    }
+
+    /// Narrow validation for the simple host map `gh` writes. Enterprise-only files remain valid and
+    /// simply produce no github.com token; empty/garbled lines are treated as malformed credentials.
+    private static func isPlausibleHostsYAML(_ text: String) -> Bool {
+        let lines = text.split(whereSeparator: \.isNewline)
+        guard !lines.isEmpty else { return false }
+        var sawRootHeader = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if line.first?.isWhitespace == true {
+                guard trimmed.contains(":") else { return false }
+            } else {
+                guard trimmed.hasSuffix(":"), !trimmed.dropLast().isEmpty else { return false }
+                sawRootHeader = true
+            }
+        }
+        return sawRootHeader
     }
 
     /// Read an indented `key: value` from within a specific host block of the `hosts.yml` GitHub CLI
@@ -144,7 +270,7 @@ struct CopilotAuthStore: Sendable {
             // An unindented line starts a new top-level block (a host header or other root key); only
             // the github.com block's children should be read.
             if let first = line.first, !first.isWhitespace {
-                inHost = line.trimmingCharacters(in: .whitespaces).hasPrefix(hostHeader)
+                inHost = line.trimmingCharacters(in: .whitespaces) == hostHeader
                 continue
             }
             guard inHost else { continue }

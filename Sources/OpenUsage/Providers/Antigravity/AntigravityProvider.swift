@@ -45,10 +45,18 @@ final class AntigravityProvider: ProviderRuntime {
     func hasLocalCredentials() async -> Bool {
         // The keychain token (or our refreshed-token cache) is the works-with-the-app-closed source
         // `refresh()` falls back to; a logged-in Antigravity install has it even when no language
-        // server is running, so process discovery isn't needed here.
-        await loadOffMainActor { [authStore] in
-            authStore.loadKeychainToken() != nil || authStore.loadCachedToken() != nil
+        // server is running, so process discovery isn't needed here. A keychain boundary failure is
+        // conservatively present; the app-owned refreshed-token cache remains best-effort.
+        var keychainToken: AntigravityKeychainToken?
+        var keychainFailed = false
+        do {
+            keychainToken = try await loadOffMainActor { [authStore] in try authStore.loadKeychainToken() }
+        } catch {
+            logUnexpectedBoundaryError(error, source: "keychain credential probe")
+            keychainFailed = true
         }
+        let cachedToken = await loadOffMainActor { [authStore] in authStore.loadCachedToken() }
+        return keychainToken != nil || cachedToken != nil || keychainFailed
     }
 
     func refresh() async -> ProviderSnapshot {
@@ -153,13 +161,20 @@ final class AntigravityProvider: ProviderRuntime {
 
     private func probeCloudCode() async throws -> StrategyResult {
         let authStore = self.authStore
-        let keychainToken = await loadOffMainActor({ authStore.loadKeychainToken() })
+        let keychainToken: AntigravityKeychainToken?
+        var loadError: AntigravityError?
+        do {
+            keychainToken = try await loadOffMainActor { try authStore.loadKeychainToken() }
+        } catch {
+            loadError = boundaryError(error, source: "keychain credential load")
+            keychainToken = nil
+        }
 
         var tokens: [String] = []
         if let keychainToken, let access = keychainToken.accessToken, authStore.isUsable(expiry: keychainToken.expiry) {
             tokens.append(access)
         }
-        if let cached = authStore.loadCachedToken(), !tokens.contains(cached) {
+        if let cached = await loadOffMainActor({ authStore.loadCachedToken() }), !tokens.contains(cached) {
             tokens.append(cached)
         }
 
@@ -202,7 +217,19 @@ final class AntigravityProvider: ProviderRuntime {
         if sawAuthFailure { throw AntigravityError.authExpired }
         // Signed in but every endpoint was unreachable — report a transient failure, not "not signed in".
         if hasCredentials { throw AntigravityError.unavailable }
+        if let loadError { throw loadError }
         throw AntigravityError.notSignedIn
+    }
+
+    private func boundaryError(_ error: Error, source: String) -> AntigravityError {
+        if let authError = error as? AntigravityError { return authError }
+        AppLog.error(LogTag.auth("antigravity"), "unexpected \(source) failure")
+        return .credentialStoreUnreadable
+    }
+
+    private func logUnexpectedBoundaryError(_ error: Error, source: String) {
+        guard !(error is AntigravityError) else { return }
+        AppLog.error(LogTag.auth("antigravity"), "unexpected \(source) failure")
     }
 
     private enum CloudCodeProbe {

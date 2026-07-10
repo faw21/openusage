@@ -49,6 +49,9 @@ Using Copilot in a supported editor is enough on its own — the editor writes t
 
 - **"Sign in to GitHub Copilot…"** — no token was found. Sign in to Copilot in your editor, or run `gh auth login`.
 - **"GitHub token invalid or expired"** — the token was rejected (401/403). Re-authenticate with `gh auth login`.
+- **"Couldn't read GitHub Copilot credentials"** — an editor or GitHub CLI credential source exists but cannot be read. Check its file permissions and that Keychain is unlocked.
+- **"GitHub Copilot credentials are invalid"** — a compatible GitHub.com credential source is malformed. Sign in again through your editor or run `gh auth login` to replace it.
+- A valid config containing only GitHub Enterprise hosts is ignored for the GitHub.com usage API; OpenUsage continues to the next editor file, GitHub CLI config, and Keychain source.
 - **Meters show "No data" but the plan is shown** — expected on an org-managed Copilot Business/Enterprise seat when you aren't an owner or billing manager of the org (GitHub doesn't expose per-seat quota, and org billing is admin-only). If you *are* an org admin and still see no Org Credits, make sure your token can list your orgs — the GitHub CLI token from `gh auth login` can; some editor-plugin tokens can't.
 
 ## Under the hood
