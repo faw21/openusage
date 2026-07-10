@@ -66,6 +66,14 @@ final class WidgetDataStore {
     /// day. `nil` (and so a no-op) in tests and previews. Not observable UI state.
     @ObservationIgnored var onRefreshOutcome: (@MainActor (String, RefreshOutcome, ErrorCategory?, Bool) -> Void)?
 
+    /// Deterministic concurrency-test seam invoked after a caller is actually registered behind an
+    /// active provider request. Nil in the app; unlike scheduler yields, this proves the waiter exists.
+    @ObservationIgnored var onRefreshJoined: (@MainActor (String, Bool) -> Void)?
+
+    /// Deterministic concurrency-test gate immediately before a reserved cancellation hand-off drains
+    /// its queue. Nil in the app; tests can pause here to prove the provider slot remains reserved.
+    @ObservationIgnored var beforeRefreshHandOff: (@MainActor () async -> Void)?
+
     /// Global meter style: whether every bounded tile (and the menu-bar value) renders as "used" or
     /// "left/remaining". Persisted so the choice survives relaunch; defaults to `.remaining`.
     var meterStyle: WidgetDisplayMode {
@@ -217,7 +225,11 @@ final class WidgetDataStore {
             // Wait for the owner's real outcome. A force also requests one fresh post-flight probe because
             // credentials may have changed after the owner loaded them.
             AppLog.debug(.refresh, "\(force ? "queue forced" : "join") refresh \(providerID) (already in flight)")
-            return await refreshCoalescer.join(providerID: providerID, force: force)
+            return await refreshCoalescer.join(
+                providerID: providerID,
+                force: force,
+                onRegistered: { [weak self] in self?.onRefreshJoined?(providerID, force) }
+            )
         }
 
         refreshingProviderIDs.insert(providerID)
@@ -228,61 +240,96 @@ final class WidgetDataStore {
             }
         }
 
-        var outcome = await performRefresh(providerID: providerID, provider: provider, force: force)
-        refreshCoalescer.resolveNonForcedWaiters(providerID: providerID, outcome: outcome)
+        let ownerOutcome = await performRefresh(providerID: providerID, provider: provider, force: force)
+        refreshCoalescer.resolveNonForcedWaiters(providerID: providerID, outcome: ownerOutcome)
         if Task.isCancelled {
             if refreshCoalescer.hasQueuedForcedRefresh(providerID: providerID) {
-                // The cancelled owner cannot satisfy a force requested by another live caller. Release
-                // the provider slot and move that work to a fresh, independent task.
+                // The cancelled owner cannot satisfy another caller's force. Transfer the still-held
+                // slot to an independent task so no newer owner can slip into the hand-off gap.
                 ownsProviderSlot = false
-                refreshingProviderIDs.remove(providerID)
                 handOffQueuedForcedRefresh(providerID: providerID)
-            } else {
-                refreshCoalescer.resolveWaiters(providerID: providerID, outcome: .skipped)
             }
             return .skipped
         }
 
-        var queuedOutcome = outcome
+        switch await drainQueuedForcedRefreshes(providerID: providerID, provider: provider) {
+        case .completed:
+            return ownerOutcome
+        case .slotTransferred:
+            ownsProviderSlot = false
+            return .skipped
+        }
+    }
+
+    private enum ForcedRefreshDrainResult {
+        case completed(performedRequest: Bool)
+        case slotTransferred
+    }
+
+    /// Drain each queued force as its own waiter cohort while the caller owns the provider slot.
+    /// Cancellation transfers that same reservation to a detached task; it never opens a gap where a
+    /// newer owner could start and acquire synthetic work on behalf of an older, cancelled cohort.
+    private func drainQueuedForcedRefreshes(
+        providerID: String,
+        provider: ProviderRuntime
+    ) async -> ForcedRefreshDrainResult {
+        var performedRequest = false
         while let forceClaim = refreshCoalescer.takeQueuedForcedRefresh(providerID: providerID) {
             // Cancellation can land after the check above but before this claim. Restore its original
             // provenance instead of letting an already-cancelled owner enter provider work.
             if Task.isCancelled {
-                ownsProviderSlot = false
                 finishCancelledForcedRefreshClaim(
                     forceClaim,
                     providerID: providerID,
                     outcome: .skipped
                 )
-                return .skipped
+                return .slotTransferred
+            }
+            // A force waiter can cancel concurrently just after its flag was claimed. Avoid starting
+            // provider work when that claim no longer contains any live caller or enablement intent.
+            guard refreshCoalescer.hasLiveIntent(forceClaim, providerID: providerID) else {
+                refreshCoalescer.resolveClaimedWaiters(
+                    forceClaim,
+                    providerID: providerID,
+                    outcome: .skipped
+                )
+                continue
             }
             // A disable that lands during the active request wins; do not start a new request for a
             // provider the user has since turned off.
             guard isProviderEnabled(providerID) else {
-                queuedOutcome = .skipped
+                refreshCoalescer.resolveClaimedWaiters(
+                    forceClaim,
+                    providerID: providerID,
+                    outcome: .skipped
+                )
                 break
             }
+            performedRequest = true
             AppLog.debug(.refresh, "run queued forced refresh \(providerID)")
-            outcome = await performRefresh(providerID: providerID, provider: provider, force: true)
-            queuedOutcome = outcome
+            let outcome = await performRefresh(providerID: providerID, provider: provider, force: true)
             refreshCoalescer.resolveNonForcedWaiters(providerID: providerID, outcome: outcome)
+            if outcome != .skipped {
+                refreshCoalescer.resolveClaimedWaiters(
+                    forceClaim,
+                    providerID: providerID,
+                    outcome: outcome
+                )
+            }
             if Task.isCancelled {
-                ownsProviderSlot = false
                 finishCancelledForcedRefreshClaim(
                     forceClaim,
                     providerID: providerID,
                     outcome: outcome
                 )
-                return .skipped
+                return .slotTransferred
             }
         }
-        refreshCoalescer.resolveWaiters(providerID: providerID, outcome: queuedOutcome)
-        return outcome
+        return .completed(performedRequest: performedRequest)
     }
 
-    /// Release a cancelled owner's slot. An interrupted follow-up restores only its still-live intent;
-    /// a follow-up that already produced a real outcome is complete and must never be replayed. Newer
-    /// forced work, if any, is handed to a task with an independent cancellation lifetime.
+    /// Transfer a cancelled owner's slot when live work remains, or release it when none does. An
+    /// interrupted follow-up restores only its still-live intent; a completed follow-up is never replayed.
     private func finishCancelledForcedRefreshClaim(
         _ claim: ProviderRefreshCoalescer.ForcedRefreshClaim,
         providerID: String,
@@ -293,22 +340,50 @@ final class WidgetDataStore {
         } else {
             refreshCoalescer.hasQueuedForcedRefresh(providerID: providerID)
         }
-        refreshingProviderIDs.remove(providerID)
         if hasLiveForcedRefresh {
             handOffQueuedForcedRefresh(providerID: providerID)
         } else {
-            refreshCoalescer.resolveWaiters(providerID: providerID, outcome: outcome)
+            refreshingProviderIDs.remove(providerID)
         }
     }
 
-    /// Let the coalescer continue forced work with an independent cancellation lifetime. Consuming the
-    /// queue before `refresh(force:)` makes that call the promised follow-up, not a third request.
+    /// Transfer the already-reserved provider slot to a task with an independent cancellation lifetime.
+    /// The task drains the original waiter provenance directly; it never manufactures a synthetic force.
     private func handOffQueuedForcedRefresh(providerID: String) {
-        refreshCoalescer.handOffQueuedForcedRefresh(providerID: providerID) { [weak self] in
-            guard let self, self.isProviderEnabled(providerID), self.providersByID[providerID] != nil else {
-                return nil
+        Task.detached { [weak self] in
+            await self?.runReservedForcedRefreshHandOff(providerID: providerID)
+        }
+    }
+
+    /// Continue a cancelled owner's queued work without releasing its provider slot. Ordinary callers
+    /// that arrive during the transfer join this reserved request; later forces become later claims.
+    private func runReservedForcedRefreshHandOff(providerID: String) async {
+        if let beforeRefreshHandOff {
+            self.beforeRefreshHandOff = nil
+            await beforeRefreshHandOff()
+        }
+        var ownsProviderSlot = true
+        defer {
+            if ownsProviderSlot {
+                refreshingProviderIDs.remove(providerID)
             }
-            return await self.refresh(providerID: providerID, force: true)
+        }
+        guard let provider = providersByID[providerID] else {
+            AppLog.error(.refresh, "reserved refresh hand-off lost provider \(providerID)")
+            while let claim = refreshCoalescer.takeQueuedForcedRefresh(providerID: providerID) {
+                refreshCoalescer.resolveClaimedWaiters(claim, providerID: providerID, outcome: .skipped)
+            }
+            refreshCoalescer.resolveNonForcedWaiters(providerID: providerID, outcome: .skipped)
+            return
+        }
+
+        switch await drainQueuedForcedRefreshes(providerID: providerID, provider: provider) {
+        case .completed(let performedRequest):
+            if !performedRequest {
+                refreshCoalescer.resolveNonForcedWaiters(providerID: providerID, outcome: .skipped)
+            }
+        case .slotTransferred:
+            ownsProviderSlot = false
         }
     }
 

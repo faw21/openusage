@@ -15,14 +15,17 @@ final class RefreshCoalescingTests: XCTestCase {
         await fulfillment(of: [firstStarted], timeout: 1)
 
         let joinedReturned = MutableFlag(value: false)
+        let joinedEntered = expectation(description: "ordinary caller entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if !force { joinedEntered.fulfill() }
+        }
         let joined = Task {
             let outcome = await fixture.store.refresh(providerID: testProvider.id)
             joinedReturned.value = true
             joinedFinished.fulfill()
             return outcome
         }
-        await Task.yield()
-        await Task.yield()
+        await fulfillment(of: [joinedEntered], timeout: 1)
         XCTAssertFalse(joinedReturned.value, "the caller must be registered behind the active owner")
 
         joined.cancel()
@@ -61,13 +64,16 @@ final class RefreshCoalescingTests: XCTestCase {
         await fulfillment(of: [firstStarted], timeout: 1)
 
         let forcedReturned = MutableFlag(value: false)
+        let forcedEntered = expectation(description: "force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedEntered.fulfill() }
+        }
         let forced = Task {
             let outcome = await fixture.store.refresh(providerID: testProvider.id, force: true)
             forcedReturned.value = true
             return outcome
         }
-        await Task.yield()
-        await Task.yield()
+        await fulfillment(of: [forcedEntered], timeout: 1)
         XCTAssertFalse(forcedReturned.value)
 
         original.cancel()
@@ -90,6 +96,62 @@ final class RefreshCoalescingTests: XCTestCase {
         XCTAssertTrue(telemetry.first?.manual == true)
     }
 
+    func testHandedOffForceKeepsOwnOutcomeWhenLaterForceFails() async {
+        let fixture = makeFixture(
+            snapshots: [
+                .error(provider: testProvider, message: "Cancelled owner result."),
+                successSnapshot(used: 80),
+                .error(provider: testProvider, message: "Later force failed."),
+            ]
+        )
+        let firstStarted = expectation(description: "original refresh started")
+        let handedOffStarted = expectation(description: "handed-off force started")
+        let laterForceStarted = expectation(description: "later force started")
+        fixture.runtime.onStart = { count in
+            if count == 1 { firstStarted.fulfill() }
+            if count == 2 { handedOffStarted.fulfill() }
+            if count == 3 { laterForceStarted.fulfill() }
+        }
+
+        let original = Task { await fixture.store.refresh(providerID: testProvider.id) }
+        await fulfillment(of: [firstStarted], timeout: 1)
+
+        let forcedAEntered = expectation(description: "first force registered")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedAEntered.fulfill() }
+        }
+        let forcedA = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
+        await fulfillment(of: [forcedAEntered], timeout: 1)
+
+        original.cancel()
+        fixture.runtime.resumeNext()
+        await fulfillment(of: [handedOffStarted], timeout: 1)
+
+        let forcedBEntered = expectation(description: "later force registered")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedBEntered.fulfill() }
+        }
+        let forcedB = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
+        await fulfillment(of: [forcedBEntered], timeout: 1)
+
+        fixture.runtime.resumeNext()
+        await fulfillment(of: [laterForceStarted], timeout: 1)
+        fixture.runtime.resumeNext()
+
+        let originalOutcome = await original.value
+        let forcedAOutcome = await forcedA.value
+        let forcedBOutcome = await forcedB.value
+
+        XCTAssertTrue(originalOutcome == .skipped)
+        XCTAssertTrue(forcedAOutcome == .refreshed)
+        XCTAssertTrue(forcedBOutcome == .failed)
+        XCTAssertEqual(fixture.runtime.refreshCount, 3)
+        XCTAssertEqual(fixture.runtime.maximumConcurrentRefreshCount, 1)
+        XCTAssertEqual(fixture.store.errorMessage(for: testProvider.id), "Later force failed.")
+        XCTAssertEqual(fixture.store.snapshots[testProvider.id]?.line(label: "Session"), sessionLine(used: 80))
+        XCTAssertFalse(fixture.store.refreshingProviderIDs.contains(testProvider.id))
+    }
+
     func testCancellingOnlyForcedWaiterWithdrawsItsFollowUp() async {
         let fixture = makeFixture(snapshots: [successSnapshot(used: 40)])
         let firstStarted = expectation(description: "original refresh started")
@@ -99,13 +161,16 @@ final class RefreshCoalescingTests: XCTestCase {
         let original = Task { await fixture.store.refresh(providerID: testProvider.id) }
         await fulfillment(of: [firstStarted], timeout: 1)
 
+        let forcedEntered = expectation(description: "force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedEntered.fulfill() }
+        }
         let forced = Task {
             let outcome = await fixture.store.refresh(providerID: testProvider.id, force: true)
             forcedFinished.fulfill()
             return outcome
         }
-        await Task.yield()
-        await Task.yield()
+        await fulfillment(of: [forcedEntered], timeout: 1)
 
         forced.cancel()
         // Resume the owner immediately, before the cancellation cleanup task can hop back to MainActor.
@@ -134,13 +199,16 @@ final class RefreshCoalescingTests: XCTestCase {
 
         let original = Task { await fixture.store.refresh(providerID: testProvider.id) }
         await fulfillment(of: [firstStarted], timeout: 1)
+        let forcedEntered = expectation(description: "force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedEntered.fulfill() }
+        }
         let forced = Task {
             let outcome = await fixture.store.refresh(providerID: testProvider.id, force: true)
             forcedFinished.fulfill()
             return outcome
         }
-        await Task.yield()
-        await Task.yield()
+        await fulfillment(of: [forcedEntered], timeout: 1)
 
         fixture.runtime.resumeNext()
         await fulfillment(of: [followUpStarted], timeout: 1)
@@ -195,8 +263,14 @@ final class RefreshCoalescingTests: XCTestCase {
 
         original = Task { await fixture.store.refresh(providerID: testProvider.id) }
         await fulfillment(of: [firstStarted], timeout: 1)
-        let forced = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
-        await Task.yield()
+        let forcedEntered = expectation(description: "force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedEntered.fulfill() }
+        }
+        let forced = Task {
+            return await fixture.store.refresh(providerID: testProvider.id, force: true)
+        }
+        await fulfillment(of: [forcedEntered], timeout: 1)
 
         fixture.runtime.resumeNext()
         await fulfillment(of: [followUpStarted], timeout: 1)
@@ -210,6 +284,127 @@ final class RefreshCoalescingTests: XCTestCase {
         XCTAssertTrue(forcedOutcome == .refreshed)
         XCTAssertEqual(fixture.runtime.refreshCount, 2, "completed forced work must not be replayed")
         XCTAssertEqual(fixture.store.snapshots[testProvider.id]?.line(label: "Session"), sessionLine(used: 80))
+        XCTAssertFalse(fixture.store.refreshingProviderIDs.contains(testProvider.id))
+    }
+
+    func testDisabledLaterForceDoesNotDowngradeCompletedForcedOutcome() async {
+        let enabled = MutableFlag()
+        let fixture = makeFixture(
+            snapshots: [successSnapshot(used: 20), successSnapshot(used: 80)],
+            isEnabled: { enabled.value }
+        )
+        let firstStarted = expectation(description: "original refresh started")
+        let followUpStarted = expectation(description: "first forced follow-up started")
+        fixture.runtime.onStart = { count in
+            if count == 1 { firstStarted.fulfill() }
+            if count == 2 { followUpStarted.fulfill() }
+        }
+
+        var original: Task<WidgetDataStore.RefreshOutcome, Never>?
+        fixture.store.onRefreshOutcome = { _, outcome, _, force in
+            if force, outcome == .refreshed, fixture.runtime.refreshCount == 2 {
+                // A completed successfully. Cancel its owner and disable before queued B can run.
+                enabled.value = false
+                original?.cancel()
+            }
+        }
+
+        original = Task { await fixture.store.refresh(providerID: testProvider.id) }
+        await fulfillment(of: [firstStarted], timeout: 1)
+        let forcedAEntered = expectation(description: "first force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedAEntered.fulfill() }
+        }
+        let forcedA = Task {
+            return await fixture.store.refresh(providerID: testProvider.id, force: true)
+        }
+        await fulfillment(of: [forcedAEntered], timeout: 1)
+
+        fixture.runtime.resumeNext()
+        await fulfillment(of: [followUpStarted], timeout: 1)
+        let forcedBEntered = expectation(description: "later force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedBEntered.fulfill() }
+        }
+        let forcedB = Task {
+            return await fixture.store.refresh(providerID: testProvider.id, force: true)
+        }
+        await fulfillment(of: [forcedBEntered], timeout: 1)
+        fixture.runtime.resumeNext()
+
+        let originalOutcome = await original?.value
+        let forcedAOutcome = await forcedA.value
+        let forcedBOutcome = await forcedB.value
+
+        XCTAssertTrue(originalOutcome == .skipped)
+        XCTAssertTrue(forcedAOutcome == .refreshed, "later cleanup must preserve A's completed result")
+        XCTAssertTrue(forcedBOutcome == .skipped)
+        XCTAssertEqual(fixture.runtime.refreshCount, 2)
+        XCTAssertEqual(fixture.store.snapshots[testProvider.id]?.line(label: "Session"), sessionLine(used: 80))
+        XCTAssertFalse(fixture.store.refreshingProviderIDs.contains(testProvider.id))
+    }
+
+    func testReservedHandOffDoesNotCreateOwnerlessSyntheticForce() async {
+        let fixture = makeFixture(
+            snapshots: [
+                .error(provider: testProvider, message: "Cancelled owner result."),
+                successSnapshot(used: 80),
+            ]
+        )
+        let firstStarted = expectation(description: "original refresh started")
+        let handedOffStarted = expectation(description: "reserved hand-off refresh started")
+        fixture.runtime.onStart = { count in
+            if count == 1 { firstStarted.fulfill() }
+            if count == 2 { handedOffStarted.fulfill() }
+        }
+
+        let handOffPaused = expectation(description: "reserved hand-off paused")
+        var handOffContinuation: CheckedContinuation<Void, Never>?
+        fixture.store.beforeRefreshHandOff = {
+            handOffPaused.fulfill()
+            await withCheckedContinuation { handOffContinuation = $0 }
+        }
+
+        let original = Task { await fixture.store.refresh(providerID: testProvider.id) }
+        await fulfillment(of: [firstStarted], timeout: 1)
+        let oldForceEntered = expectation(description: "old force registered")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { oldForceEntered.fulfill() }
+        }
+        let oldForce = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
+        await fulfillment(of: [oldForceEntered], timeout: 1)
+
+        original.cancel()
+        fixture.runtime.resumeNext()
+        await fulfillment(of: [handOffPaused], timeout: 1)
+        XCTAssertTrue(fixture.store.refreshingProviderIDs.contains(testProvider.id))
+
+        let newForceEntered = expectation(description: "new force registered behind reservation")
+        let ordinaryEntered = expectation(description: "ordinary caller registered behind reservation")
+        fixture.store.onRefreshJoined = { _, force in
+            (force ? newForceEntered : ordinaryEntered).fulfill()
+        }
+        let newForce = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
+        let ordinary = Task { await fixture.store.refresh(providerID: testProvider.id) }
+        await fulfillment(of: [newForceEntered, ordinaryEntered], timeout: 1)
+
+        oldForce.cancel()
+        let oldForceOutcome = await oldForce.value
+        handOffContinuation?.resume()
+        handOffContinuation = nil
+
+        await fulfillment(of: [handedOffStarted], timeout: 1)
+        fixture.runtime.resumeNext()
+        let originalOutcome = await original.value
+        let newForceOutcome = await newForce.value
+        let ordinaryOutcome = await ordinary.value
+
+        XCTAssertTrue(originalOutcome == .skipped)
+        XCTAssertTrue(oldForceOutcome == .skipped)
+        XCTAssertTrue(newForceOutcome == .refreshed)
+        XCTAssertTrue(ordinaryOutcome == .refreshed)
+        XCTAssertEqual(fixture.runtime.refreshCount, 2, "cancelled old intent must not create a third request")
+        XCTAssertEqual(fixture.runtime.maximumConcurrentRefreshCount, 1)
         XCTAssertFalse(fixture.store.refreshingProviderIDs.contains(testProvider.id))
     }
 
@@ -266,13 +461,16 @@ final class RefreshCoalescingTests: XCTestCase {
         await fulfillment(of: [firstStarted], timeout: 1)
 
         let joinedReturned = MutableFlag(value: false)
+        let joinedEntered = expectation(description: "ordinary caller entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if !force { joinedEntered.fulfill() }
+        }
         let joined = Task {
             let outcome = await fixture.store.refresh(providerID: testProvider.id)
             joinedReturned.value = true
             return outcome
         }
-        await Task.yield()
-        await Task.yield()
+        await fulfillment(of: [joinedEntered], timeout: 1)
         XCTAssertFalse(joinedReturned.value)
         XCTAssertEqual(fixture.runtime.refreshCount, 1)
 
@@ -311,10 +509,18 @@ final class RefreshCoalescingTests: XCTestCase {
 
         // Model an API-key save and a second click while the request that loaded the old key is suspended.
         // Both callers must join one queued follow-up rather than disappearing or starting overlapping I/O.
-        let forcedA = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
-        let forcedB = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
-        await Task.yield()
-        await Task.yield()
+        let forcesEntered = expectation(description: "both forces entered the join path")
+        forcesEntered.expectedFulfillmentCount = 2
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcesEntered.fulfill() }
+        }
+        let forcedA = Task {
+            return await fixture.store.refresh(providerID: testProvider.id, force: true)
+        }
+        let forcedB = Task {
+            return await fixture.store.refresh(providerID: testProvider.id, force: true)
+        }
+        await fulfillment(of: [forcesEntered], timeout: 1)
         XCTAssertEqual(fixture.runtime.refreshCount, 1)
 
         fixture.runtime.resumeNext()
@@ -327,7 +533,7 @@ final class RefreshCoalescingTests: XCTestCase {
         let forcedAOutcome = await forcedA.value
         let forcedBOutcome = await forcedB.value
 
-        XCTAssertTrue(originalOutcome == .refreshed)
+        XCTAssertTrue(originalOutcome == .failed)
         XCTAssertTrue(forcedAOutcome == .refreshed)
         XCTAssertTrue(forcedBOutcome == .refreshed)
         XCTAssertEqual(fixture.runtime.refreshCount, 2, "a force burst must produce exactly one follow-up")
@@ -352,6 +558,7 @@ final class RefreshCoalescingTests: XCTestCase {
         let firstStarted = expectation(description: "original refresh started")
         let secondStarted = expectation(description: "first forced follow-up started")
         let thirdStarted = expectation(description: "second forced follow-up started")
+        let forcedAReturned = expectation(description: "first force received its follow-up outcome")
         fixture.runtime.onStart = { count in
             if count == 1 { firstStarted.fulfill() }
             if count == 2 { secondStarted.fulfill() }
@@ -361,38 +568,46 @@ final class RefreshCoalescingTests: XCTestCase {
 
         let original = Task { await fixture.store.refresh(providerID: testProvider.id) }
         await fulfillment(of: [firstStarted], timeout: 1)
+        let forcedAEntered = expectation(description: "first force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedAEntered.fulfill() }
+        }
         let forcedA = Task {
             let outcome = await fixture.store.refresh(providerID: testProvider.id, force: true)
             waiterReturnCount += 1
+            forcedAReturned.fulfill()
             return outcome
         }
-        await Task.yield()
+        await fulfillment(of: [forcedAEntered], timeout: 1)
 
         fixture.runtime.resumeNext()
         await fulfillment(of: [secondStarted], timeout: 1)
+        let forcedBEntered = expectation(description: "second force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            if force { forcedBEntered.fulfill() }
+        }
         let forcedB = Task {
             let outcome = await fixture.store.refresh(providerID: testProvider.id, force: true)
             waiterReturnCount += 1
             return outcome
         }
-        await Task.yield()
-        await Task.yield()
+        await fulfillment(of: [forcedBEntered], timeout: 1)
         XCTAssertEqual(fixture.runtime.refreshCount, 2)
         XCTAssertEqual(waiterReturnCount, 0)
 
         fixture.runtime.resumeNext()
-        await fulfillment(of: [thirdStarted], timeout: 1)
+        await fulfillment(of: [thirdStarted, forcedAReturned], timeout: 1)
         XCTAssertEqual(fixture.runtime.refreshCount, 3)
         XCTAssertEqual(fixture.runtime.maximumConcurrentRefreshCount, 1)
-        XCTAssertEqual(waiterReturnCount, 0, "both force callers wait for the newest queued outcome")
+        XCTAssertEqual(waiterReturnCount, 1, "force A receives the request that consumed A's intent")
 
         fixture.runtime.resumeNext()
         let originalOutcome = await original.value
         let forcedAOutcome = await forcedA.value
         let forcedBOutcome = await forcedB.value
 
-        XCTAssertTrue(originalOutcome == .failed)
-        XCTAssertTrue(forcedAOutcome == .failed)
+        XCTAssertTrue(originalOutcome == .refreshed)
+        XCTAssertTrue(forcedAOutcome == .refreshed)
         XCTAssertTrue(forcedBOutcome == .failed)
         XCTAssertEqual(waiterReturnCount, 2)
         XCTAssertEqual(fixture.runtime.refreshCount, 3, "the later force queues exactly one more request")
@@ -460,7 +675,7 @@ final class RefreshCoalescingTests: XCTestCase {
         fixture.runtime.resumeNext()
         let outcome = await original.value
 
-        XCTAssertTrue(outcome == .refreshed)
+        XCTAssertTrue(outcome == .failed)
         XCTAssertEqual(fixture.runtime.refreshCount, 2)
         XCTAssertNil(fixture.store.errorMessage(for: testProvider.id))
         XCTAssertEqual(fixture.store.snapshots[testProvider.id]?.line(label: "Session"), sessionLine(used: 65))
@@ -477,9 +692,18 @@ final class RefreshCoalescingTests: XCTestCase {
 
         let original = Task { await fixture.store.refresh(providerID: testProvider.id) }
         await fulfillment(of: [firstStarted], timeout: 1)
-        let joined = Task { await fixture.store.refresh(providerID: testProvider.id) }
-        let forced = Task { await fixture.store.refresh(providerID: testProvider.id, force: true) }
-        await Task.yield()
+        let joinedEntered = expectation(description: "ordinary joiner entered the join path")
+        let forcedEntered = expectation(description: "force entered the join path")
+        fixture.store.onRefreshJoined = { _, force in
+            (force ? forcedEntered : joinedEntered).fulfill()
+        }
+        let joined = Task {
+            return await fixture.store.refresh(providerID: testProvider.id)
+        }
+        let forced = Task {
+            return await fixture.store.refresh(providerID: testProvider.id, force: true)
+        }
+        await fulfillment(of: [joinedEntered, forcedEntered], timeout: 1)
 
         enabled.value = false
         fixture.runtime.resumeNext()

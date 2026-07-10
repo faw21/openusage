@@ -2,16 +2,16 @@ import Foundation
 import os
 
 extension WidgetDataStore {
-    /// What a single provider's refresh actually did this pass, so `refreshAll` can summarize the batch
-    /// from real outcomes rather than cumulative error state. Concurrent calls receive the active
-    /// provider request's eventual outcome instead of being reported as skipped.
+    /// What a single provider request actually did, so `refreshAll` can summarize the batch from real
+    /// outcomes rather than cumulative error state. Ordinary joiners receive the active request's
+    /// outcome; forced joiners receive the follow-up that consumes their intent.
     enum RefreshOutcome: Sendable { case refreshed, failed, cacheHit, skipped, backedOff }
 }
 
 /// Pending work behind `WidgetDataStore`'s per-provider in-flight guard. An ordinary caller receives
-/// the active request's outcome; a forced caller queues a post-flight probe and waits until the forced
-/// chain settles. Keeping this bookkeeping separate leaves the store focused on fetch policy and
-/// snapshot updates.
+/// the active request's outcome; a forced caller queues a post-flight probe and receives the outcome
+/// of the probe that consumes its intent. Keeping this bookkeeping separate leaves the store focused
+/// on fetch policy and snapshot updates.
 @MainActor
 final class ProviderRefreshCoalescer {
     /// `Task.cancel()` invokes its handler off-actor. This flag closes the interval before the cleanup
@@ -50,7 +50,11 @@ final class ProviderRefreshCoalescer {
     private var queuedForcedProviderIDs: Set<String> = []
     private var waiters: [String: [Waiter]] = [:]
 
-    func join(providerID: String, force: Bool) async -> WidgetDataStore.RefreshOutcome {
+    func join(
+        providerID: String,
+        force: Bool,
+        onRegistered: @MainActor () -> Void = {}
+    ) async -> WidgetDataStore.RefreshOutcome {
         let waiterID = UUID()
         let cancellation = WaiterCancellation()
         return await withTaskCancellationHandler {
@@ -61,7 +65,8 @@ final class ProviderRefreshCoalescer {
                     waiterID: waiterID,
                     force: force,
                     cancellation: cancellation,
-                    continuation: continuation
+                    continuation: continuation,
+                    onRegistered: onRegistered
                 )
             }
         } onCancel: {
@@ -81,7 +86,8 @@ final class ProviderRefreshCoalescer {
         waiterID: UUID,
         force: Bool,
         cancellation: WaiterCancellation,
-        continuation: CheckedContinuation<WidgetDataStore.RefreshOutcome, Never>
+        continuation: CheckedContinuation<WidgetDataStore.RefreshOutcome, Never>,
+        onRegistered: @MainActor () -> Void
     ) {
         guard !cancellation.isCancelled else {
             continuation.resume(returning: .skipped)
@@ -94,6 +100,7 @@ final class ProviderRefreshCoalescer {
             cancellation: cancellation,
             continuation: continuation
         ))
+        onRegistered()
     }
 
     /// Remove and return one cancelled waiter so the store can resume it promptly as `.skipped`.
@@ -174,7 +181,7 @@ final class ProviderRefreshCoalescer {
         return hasQueuedForcedRefresh(providerID: providerID)
     }
 
-    private func isLive(_ claim: ForcedRefreshClaim, providerID: String) -> Bool {
+    func hasLiveIntent(_ claim: ForcedRefreshClaim, providerID: String) -> Bool {
         claim.includesEnablementIntent
             || waiters[providerID]?.contains(where: {
                 claim.waiterIDs.contains($0.id) && !$0.cancellation.isCancelled
@@ -182,7 +189,7 @@ final class ProviderRefreshCoalescer {
     }
 
     /// Complete callers that joined only the request that just finished. Forced callers stay queued
-    /// until the forced chain settles, including any newer force that arrived during a follow-up.
+    /// for the specific forced claim that consumes their intent.
     func resolveNonForcedWaiters(
         providerID: String,
         outcome: WidgetDataStore.RefreshOutcome
@@ -196,37 +203,20 @@ final class ProviderRefreshCoalescer {
         }
     }
 
-    func resolveWaiters(
+    /// Complete only the forced callers whose intent this claim consumed. Later forced callers belong
+    /// to a newer claim, so their cancellation or disablement can never rewrite this cohort's result.
+    func resolveClaimedWaiters(
+        _ claim: ForcedRefreshClaim,
         providerID: String,
         outcome: WidgetDataStore.RefreshOutcome
     ) {
-        for waiter in waiters.removeValue(forKey: providerID) ?? [] {
+        guard let providerWaiters = waiters[providerID] else { return }
+        let completed = providerWaiters.filter { claim.waiterIDs.contains($0.id) }
+        let remaining = providerWaiters.filter { !claim.waiterIDs.contains($0.id) }
+        waiters[providerID] = remaining.isEmpty ? nil : remaining
+        for waiter in completed {
             waiter.continuation.resume(returning: waiter.cancellation.isCancelled ? .skipped : outcome)
         }
     }
 
-    /// Move a claimed forced follow-up to an independent task when its original owner is cancelled.
-    /// `operation` returns `nil` when the provider can no longer run; otherwise its normal refresh
-    /// pipeline owns waiter resolution.
-    func handOffQueuedForcedRefresh(
-        providerID: String,
-        operation: @escaping @MainActor () async -> WidgetDataStore.RefreshOutcome?
-    ) {
-        Task.detached { [weak self] in
-            await self?.runHandedOffForcedRefresh(providerID: providerID, operation: operation)
-        }
-    }
-
-    private func runHandedOffForcedRefresh(
-        providerID: String,
-        operation: @escaping @MainActor () async -> WidgetDataStore.RefreshOutcome?
-    ) async {
-        guard let claim = takeQueuedForcedRefresh(providerID: providerID),
-              isLive(claim, providerID: providerID),
-              await operation() != nil
-        else {
-            resolveWaiters(providerID: providerID, outcome: .skipped)
-            return
-        }
-    }
 }
