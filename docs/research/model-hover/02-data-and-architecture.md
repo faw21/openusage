@@ -2,6 +2,8 @@
 
 Research date: 2026-07-04. Scope: current `main`-line SwiftPM app architecture in this worktree. This is read-only technical research for a hover-revealed per-model spend/usage breakdown on the existing `Today`, `Yesterday`, and `Last 30 Days` spend rows.
 
+> **Status update (2026-07-10):** This document records the preimplementation architecture at its research date. The current code now carries per-model usage through `ModelUsageSeries`; Cursor's boundary parser also throws on unusable CSV structure and returns `CursorUsageCSVParseResult` (`rows` plus `rejectedRowCount`). See [Cursor](../../providers/cursor.md) for current user-facing behavior.
+
 ## Executive conclusion
 
 This feature is technically feasible for Cursor, Claude, Codex, and partially for Grok without adding new external usage APIs. The raw provider inputs already carry a model dimension before the current spend pipeline collapses them into `DailyUsageSeries`.

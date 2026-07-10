@@ -15,6 +15,7 @@ final class CursorCSVParserTests: XCTestCase {
         XCTAssertTrue(summary.isStructurallyComplete)
         XCTAssertEqual(summary.rejectedRecordCount, 0)
         XCTAssertEqual(records.count, 2)
+        guard records.count == 2 else { return }
         XCTAssertEqual(records[0]["Note"], #"a, b "quoted" c"#)
         XCTAssertEqual(records[1]["Note"], "line one\r\nline two")
         XCTAssertEqual(records[1]["Model"], "composer-1")
