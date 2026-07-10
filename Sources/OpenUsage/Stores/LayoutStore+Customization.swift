@@ -173,10 +173,10 @@ extension LayoutStore {
     /// Reorder metrics within one provider when `dragged` is dropped onto `target` (both descriptor ids of
     /// that provider). Operates on the provider's full metric order so disabled metrics keep their place too.
     ///
-    /// Dropping onto a row in the *other* section moves `dragged` across the "Shown on expand" divider:
-    /// its expanded membership follows the target's, so dragging a metric under an expanded one tucks it
-    /// away too (and vice versa). The stored order is rebuilt as always-shown rows then expanded rows, so
-    /// it always matches the partitioned layout the UI draws. Returns whether anything actually changed —
+    /// Dropping onto a row in the *other* section moves `dragged` between Always Visible and On Demand:
+    /// its On Demand membership follows the target's, so dragging a metric under an On Demand one tucks it
+    /// away too (and vice versa). The stored order is rebuilt in those two sections, so it always matches
+    /// the partitioned layout the UI draws. Returns whether anything actually changed —
     /// the drag gestures key haptics off it.
     @discardableResult
     func reorderMetric(dragged: String, target: String, in providerID: String) -> Bool {
@@ -202,7 +202,7 @@ extension LayoutStore {
         let consumedExpandOnEnable = !expanded.contains(dragged)
             && defaultExpandedOnEnableIDs.remove(dragged) != nil
 
-        // Lay the provider out the way it renders — always-shown rows, then expanded rows — keeping each
+        // Lay the provider out the way it renders — Always Visible rows, then On Demand rows — keeping each
         // section in its current order, then drop `dragged` next to `target` within that combined sequence.
         let partitioned = ordered.filter { !expanded.contains($0) } + ordered.filter { expanded.contains($0) }
         guard let next = Self.reordered(partitioned, dragged: dragged, target: target) else {
@@ -225,7 +225,7 @@ extension LayoutStore {
     }
 
     /// Apply a provider metric order that includes one visual divider sentinel. Metrics before the
-    /// sentinel become always-shown; metrics after it become shown-on-expand. This is the clean drag
+    /// sentinel become Always Visible; metrics after it become On Demand. This is the clean drag
     /// model for Customize: the divider participates in target geometry like a row, but persistence
     /// remains metric-only.
     @discardableResult
