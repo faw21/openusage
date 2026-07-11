@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 protocol EnvironmentReading: Sendable {
@@ -26,6 +27,11 @@ protocol TextFileAccessing: Sendable {
 }
 
 struct LocalTextFileAccessor: TextFileAccessing {
+    /// Credential and token files must never be readable by another local account. Write through a
+    /// private temporary file in the destination directory, flush it, then rename it over the target:
+    /// the final replacement is atomic and has mode 0600 from the moment it becomes addressable.
+    private static let privateFileMode = mode_t(S_IRUSR | S_IWUSR)
+
     func exists(_ path: String) -> Bool {
         FileManager.default.fileExists(atPath: expandHome(path))
     }
@@ -38,13 +44,73 @@ struct LocalTextFileAccessor: TextFileAccessing {
         let expanded = expandHome(path)
         let parent = URL(fileURLWithPath: expanded).deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        try text.write(toFile: expanded, atomically: true, encoding: .utf8)
+
+        let destination = URL(fileURLWithPath: expanded)
+        let temporary = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+        let descriptor = temporary.path.withCString {
+            Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, Self.privateFileMode)
+        }
+        guard descriptor >= 0 else { throw Self.currentPOSIXError() }
+
+        var descriptorIsOpen = true
+        var temporaryExists = true
+        defer {
+            if descriptorIsOpen { _ = Darwin.close(descriptor) }
+            if temporaryExists {
+                temporary.path.withCString { _ = Darwin.unlink($0) }
+            }
+        }
+
+        // A process umask may only remove permissions at creation. Reassert the exact private mode on
+        // the still-unpublished inode before writing or renaming it into place.
+        guard Darwin.fchmod(descriptor, Self.privateFileMode) == 0 else {
+            throw Self.currentPOSIXError()
+        }
+        try Self.writeAll(Data(text.utf8), to: descriptor)
+        guard Darwin.fsync(descriptor) == 0 else { throw Self.currentPOSIXError() }
+        let closeResult = Darwin.close(descriptor)
+        descriptorIsOpen = false
+        guard closeResult == 0 else { throw Self.currentPOSIXError() }
+
+        let renameResult = temporary.path.withCString { source in
+            expanded.withCString { destination in
+                Darwin.rename(source, destination)
+            }
+        }
+        guard renameResult == 0 else { throw Self.currentPOSIXError() }
+        temporaryExists = false
     }
 
     func remove(_ path: String) throws {
         let expanded = expandHome(path)
         guard FileManager.default.fileExists(atPath: expanded) else { return }
         try FileManager.default.removeItem(atPath: expanded)
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let result = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: offset),
+                    buffer.count - offset
+                )
+                if result < 0 {
+                    if errno == EINTR { continue }
+                    throw currentPOSIXError()
+                }
+                guard result > 0 else { throw POSIXError(.EIO) }
+                offset += result
+            }
+        }
+    }
+
+    private static func currentPOSIXError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 }
 
@@ -220,4 +286,3 @@ func expandHome(_ path: String) -> String {
     if path == "~" { return home }
     return home + String(path.dropFirst())
 }
-
