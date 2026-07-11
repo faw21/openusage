@@ -231,7 +231,9 @@ final class WidgetDataStore {
         refreshingProviderIDs.insert(providerID)
         defer { refreshingProviderIDs.remove(providerID) }
         let start = Date()
-        let snapshot = await provider.refresh()
+        let snapshot = await ProviderRefreshContext.$isManual.withValue(force) {
+            await provider.refresh()
+        }
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
         if let message = Self.errorMessage(in: snapshot) {
             // Failed refresh: surface the error but keep the last good snapshot on screen rather than
