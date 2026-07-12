@@ -130,6 +130,12 @@ cat >"$INFO_PLIST" <<PLIST
   <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>OpenUsage uses your local network to discover approved Macs and combine their machine-local usage.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_openusage._tcp</string>
+  </array>
 </dict>
 </plist>
 PLIST

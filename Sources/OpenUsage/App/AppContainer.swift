@@ -26,6 +26,8 @@ final class AppContainer {
     /// ephemeral secret-code easter-egg state, and the system accessibility flags it yields to. Read by both
     /// the SwiftUI surface and the AppKit panel (`StatusItemController`).
     let transparency: PopoverTransparencyStore
+    /// Opt-in Bonjour discovery and encrypted aggregation of machine-local usage from approved Macs.
+    let lanSync: LANSyncStore
     /// One-time onboarding state (the first-run Customize hint card). Only ever marked pending by
     /// `FirstRunSeeder` on a fresh install, so existing installs never see the card.
     let onboarding: OnboardingStore
@@ -185,16 +187,30 @@ final class AppContainer {
         dataStore.onRefreshOutcome = { [weak telemetry] providerID, outcome, category, manual in
             telemetry?.record(providerID: providerID, outcome: outcome, category: category, manual: manual)
         }
+        let lanSync = LANSyncStore(
+            localSnapshots: { [weak dataStore] in dataStore?.shareableSnapshots() ?? [:] },
+            applyRemoteSnapshots: { [weak dataStore] deviceID, snapshots in
+                dataStore?.setRemoteSnapshots(snapshots, for: deviceID)
+            },
+            removeRemoteSnapshots: { [weak dataStore] deviceID in
+                dataStore?.removeRemoteSnapshots(for: deviceID)
+            }
+        )
+        dataStore.onRefreshCompleted = { [weak lanSync] in
+            await lanSync?.refreshAvailablePeers()
+        }
+        self.lanSync = lanSync
         self.telemetry = telemetry
         self.transparency = PopoverTransparencyStore()
         self.localAPI = LocalUsageServer(state: { [layout, enablement, dataStore] in
             LocalUsageAPI.State(
                 enabledOrderedIDs: layout.providerOrder.filter { enablement.isEnabled($0) },
                 knownIDs: Set(registry.providers.map(\.id)),
-                snapshots: dataStore.snapshots
+                snapshots: dataStore.displaySnapshots
             )
         })
         self.refreshTask = Self.startPeriodicRefresh(dataStore: dataStore, telemetry: telemetry)
+        lanSync.start()
         localAPI.start()
         // Become the notification-center delegate so banners show while frontmost — a menu-bar accessory
         // effectively always is. Notification authorization is requested the first time a trigger is

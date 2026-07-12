@@ -68,6 +68,7 @@ struct SettingsScreen: View {
                         .hoverTooltip("Open OpenUsage from anywhere")
                 }
             }
+            nearbyMacsSection
             section("Appearance") {
                 row("Icon Style") {
                     picker($layout.menuBarStyle, options: MenuBarStyle.allCases, label: \.label)
@@ -197,6 +198,144 @@ struct SettingsScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await refreshNotificationsAuth() }
         }
+    }
+
+    // MARK: - Nearby Macs
+
+    private var nearbyMacsSection: some View {
+        @Bindable var lan = container.lanSync
+        return section("Nearby Macs") {
+            row("Share Across Macs") {
+                Toggle("", isOn: $lan.enabled)
+                    .settingsSwitchStyle()
+            }
+            Text("Discovers OpenUsage on your local network and combines machine-local tokens and spend. Account limits, credentials, and raw logs are never shared.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.bottom, lan.enabled ? 8 : 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if lan.enabled {
+                if let error = lan.serviceError {
+                    inlineNotice(error)
+                }
+                if let pairing = lan.outgoingPairing {
+                    pairingStatus(pairing)
+                }
+                ForEach(lan.incomingPairRequests) { request in
+                    incomingPairing(request)
+                }
+                ForEach(lan.pairedDevices) { device in
+                    pairedDeviceRow(device)
+                }
+                let unpaired = lan.nearbyDevices.filter { !$0.isPaired }
+                ForEach(unpaired) { device in
+                    nearbyDeviceRow(device)
+                }
+                if lan.pairedDevices.isEmpty && unpaired.isEmpty && lan.incomingPairRequests.isEmpty {
+                    Text("No other Macs found yet. Turn on Share Across Macs in OpenUsage on both computers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func pairingStatus(_ pairing: LANOutgoingPairing) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            switch pairing {
+            case .connecting(let name):
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Connecting to \(name)…")
+                }
+            case .compareCode(let name, let code):
+                Text("Compare this code on \(name), then approve there.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(code)
+                    .font(.title2.monospacedDigit().weight(.semibold))
+                    .textSelection(.enabled)
+            case .failed(let name, let message):
+                Text("Couldn't connect to \(name)").fontWeight(.medium)
+                Text(message).font(.caption).foregroundStyle(.secondary)
+                Button("Dismiss") { container.lanSync.dismissPairingStatus() }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func incomingPairing(_ request: LANIncomingPairRequest) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("Connect \(request.name)?").fontWeight(.medium)
+            Text("Only approve if this code matches on both Macs.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(request.code)
+                .font(.title2.monospacedDigit().weight(.semibold))
+                .textSelection(.enabled)
+            HStack {
+                Button("Don't Allow") { container.lanSync.denyPairing(request.id) }
+                    .buttonStyle(.bordered)
+                Button("Allow") { container.lanSync.approvePairing(request.id) }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func pairedDeviceRow(_ device: LANPairedDevice) -> some View {
+        let state = container.lanSync.peerStates[device.id] ?? LANPeerSyncState()
+        return HStack(spacing: 8) {
+            Circle()
+                .fill(state.isAvailable ? Color.green : Color.secondary.opacity(0.45))
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.name)
+                Text(peerStatusText(state))
+                    .font(.caption)
+                    .foregroundStyle(state.errorMessage == nil ? Color.secondary : Color.orange)
+            }
+            Spacer(minLength: 8)
+            if state.isSyncing { ProgressView().controlSize(.small) }
+            Button("Forget") { container.lanSync.forget(device.id) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, density.controlRowPadding)
+    }
+
+    private func nearbyDeviceRow(_ device: LANNearbyDevice) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "desktopcomputer")
+                .foregroundStyle(.secondary)
+            Text(device.name)
+            Spacer(minLength: 8)
+            Button("Connect") { container.lanSync.pair(with: device.id) }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, density.controlRowPadding)
+    }
+
+    private func peerStatusText(_ state: LANPeerSyncState) -> String {
+        if let error = state.errorMessage { return error }
+        if state.isSyncing { return "Syncing…" }
+        if state.lastSyncedAt != nil { return state.isAvailable ? "Connected" : "Unavailable" }
+        return state.isAvailable ? "Ready" : "Unavailable"
     }
 
     // MARK: - Notifications

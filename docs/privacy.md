@@ -33,6 +33,13 @@ The cache is never used after logout, an account change, or while Keychain acces
 
 Besides the provider API calls the vendor's own tools would make, OpenUsage fetches public [model price lists](pricing.md) about once an hour (from `raw.githubusercontent.com`, `models.dev`, and this project's GitHub Pages). These are plain downloads of public data — they carry no usage, log, or account information, and they run regardless of the Share Anonymous Usage setting. The spend tiles are computed from local CLI logs entirely on your Mac; no log data ever leaves it.
 
+## Nearby Macs
+
+[Nearby Macs](nearby-macs.md) is off by default. When enabled, OpenUsage uses Bonjour on your local network
+to find other copies of OpenUsage. Only Macs you explicitly approve can exchange normalized local
+cost/token totals and usage trends. Transfers are authenticated and encrypted directly between the Macs;
+credentials and raw logs are never shared, and no external service is involved.
+
 ## How it works
 
 - Data is fully anonymous: OpenUsage never identifies you to the analytics service and creates no user profile.

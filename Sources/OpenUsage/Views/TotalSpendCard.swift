@@ -42,7 +42,7 @@ struct TotalSpendCard: View {
     }
 
     private var total: TotalSpend {
-        TotalSpendAggregator.total(for: period, providers: providers, snapshots: dataStore.snapshots)
+        TotalSpendAggregator.total(for: period, providers: providers, snapshots: dataStore.displaySnapshots)
     }
 
     private var projection: TotalSpendProjection {

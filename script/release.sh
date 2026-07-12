@@ -166,6 +166,8 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>OpenUsage uses your local network to discover approved Macs and combine their machine-local usage.</string>
+  <key>NSBonjourServices</key><array><string>_openusage._tcp</string></array>
   <key>SUFeedURL</key><string>$FEED_URL</string>
   <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
   <key>SUEnableAutomaticChecks</key><true/>

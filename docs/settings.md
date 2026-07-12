@@ -22,6 +22,15 @@ Settings lives inside the popover — there is no separate window. Open it from 
 | Time Format | Auto / 12-hour / 24-hour | How exact times read (e.g. "Resets today at 6:38 PM" vs "18:38"). Auto follows the system. |
 | Increase Transparency | Off / On | Off (default) keeps the popover a solid panel. On makes it translucent so your desktop shows through, while keeping the numbers and Options control legible with adaptive frosted surfaces. It pauses automatically when you have the macOS **Reduce Transparency** or **Increase Contrast** accessibility setting turned on (a note explains why), so it never works against those preferences. |
 
+## Nearby Macs
+
+| Setting | Options | What it does |
+|---|---|---|
+| Share Across Macs | On / Off | Discovers OpenUsage on the local network and combines machine-local token and spend history from Macs you approve. Off by default. |
+
+Connecting requires a matching six-digit code and approval on the receiving Mac. Approved devices can be
+removed with **Forget**. See [Nearby Macs](nearby-macs.md) for what is shared and how it is protected.
+
 ## Usage Display
 
 | Setting | Options | What it does |

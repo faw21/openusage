@@ -51,6 +51,17 @@ The UI reads from a few observable stores:
 Refresh runs on a timer in `AppContainer`; each pass respects the cache, so the network is only hit once a
 snapshot has actually expired.
 
+## Nearby Mac sync
+
+`LANSyncStore` uses Bonjour through Network.framework to advertise and discover OpenUsage on the local
+network. Pairing is explicit: both sides derive a short comparison code from an ephemeral key exchange,
+and the receiving Mac must approve it. The saved per-device secret lives in Keychain. Later refreshes use
+that secret to authenticate both peers and encrypt a fresh ephemeral session.
+
+Only `SpendTileMapper` rows and Usage Trend charts cross the wire. `LANUsageAggregator` sums those
+machine-local values while leaving account-wide quota meters local. Received snapshots stay in memory;
+`ProviderSnapshotCache` continues to contain this Mac's data only.
+
 ## The AppKit bridge
 
 macOS menu-bar apps live in an `NSStatusItem`. OpenUsage shows its content in a custom, key-capable

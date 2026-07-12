@@ -2,6 +2,9 @@
 
 OpenUsage exposes a read-only HTTP API on the loopback interface so other local apps can consume the same usage data shown in the menu bar.
 
+When [Nearby Macs](nearby-macs.md) is enabled, the API reflects the same combined machine-local usage as
+the dashboard. It remains bound to loopback and is never exposed to the local network.
+
 **Base URL:** `http://127.0.0.1:6736`
 
 The server starts automatically with the app. If the port is already in use, the feature is silently disabled for that session.

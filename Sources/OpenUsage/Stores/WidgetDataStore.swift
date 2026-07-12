@@ -46,6 +46,21 @@ final class WidgetDataStore {
     private static let failureRetryBackoff: TimeInterval = 60
 
     var snapshots: [String: ProviderSnapshot] = [:]
+    /// Machine-local spend snapshots received from approved nearby Macs, keyed by the stable peer id.
+    /// These are memory-only: an unavailable Mac stops contributing immediately and remote data never
+    /// becomes part of this Mac's provider cache.
+    private var remoteSnapshotsByDevice: [String: [String: ProviderSnapshot]] = [:]
+
+    /// What every display/API surface should render: local account-wide metrics plus additive local-log
+    /// usage from currently available approved Macs. Pairing transport exports only shareable rows, so
+    /// quota/session meters can never be duplicated here.
+    var displaySnapshots: [String: ProviderSnapshot] {
+        LANUsageAggregator.combinedSnapshots(
+            local: snapshots,
+            remotes: remoteSnapshotsByDevice,
+            registry: registry
+        )
+    }
     var refreshingProviderIDs: Set<String> = []
     /// Wall-clock time the most recent full refresh pass finished. Together with the chosen refresh
     /// cadence it drives the dashboard footer's live "Next update in …" countdown, so the footer reflects
@@ -70,6 +85,9 @@ final class WidgetDataStore {
     /// bulk — so the recorder can roll daily usage and error counts up into one event per provider per
     /// day. `nil` (and so a no-op) in tests and previews. Not observable UI state.
     @ObservationIgnored var onRefreshOutcome: (@MainActor (String, RefreshOutcome, ErrorCategory?, Bool) -> Void)?
+    /// Post-pass hook used by LAN sync so launch, timer, popover-open, and manual refreshes all gather
+    /// nearby usage through the same path. Nil in tests/previews.
+    @ObservationIgnored var onRefreshCompleted: (@MainActor () async -> Void)?
 
     /// Global meter style: whether every bounded tile (and the menu-bar value) renders as "used" or
     /// "left/remaining". Persisted so the choice survives relaunch; defaults to `.remaining`.
@@ -153,6 +171,7 @@ final class WidgetDataStore {
         let cached = outcomes.count { $0 == .cacheHit }
         let backedOff = outcomes.count { $0 == .backedOff }
         AppLog.info(.refresh, "batch end (\(durationMs)ms, \(refreshed) ok / \(failed) failed / \(cached) cached / \(backedOff) backed off)")
+        await onRefreshCompleted?()
     }
 
     /// Evaluate every visible, enabled metric for a quota pace milestone and post a notification for any
@@ -295,7 +314,7 @@ final class WidgetDataStore {
 
     func data(for descriptor: WidgetDescriptor) -> WidgetData {
         var result: WidgetData
-        if let snapshot = snapshots[descriptor.providerID],
+        if let snapshot = displaySnapshots[descriptor.providerID],
            let line = snapshot.line(label: descriptor.metricLabel),
            let data = resolve(line, descriptor: descriptor) {
             result = data
@@ -318,7 +337,24 @@ final class WidgetDataStore {
     /// The plan label for a provider's latest snapshot. `nil` until a snapshot exists or when the
     /// provider doesn't expose a plan. Provider section headers render this beside the provider name.
     func plan(for providerID: String) -> String? {
-        snapshots[providerID]?.plan
+        displaySnapshots[providerID]?.plan
+    }
+
+    func setRemoteSnapshots(_ snapshots: [String: ProviderSnapshot], for deviceID: String) {
+        // Treat the wire as a system boundary even after authentication: an older/buggy peer cannot
+        // smuggle account-wide quota rows into aggregation.
+        remoteSnapshotsByDevice[deviceID] = LANUsageAggregator.shareableSnapshots(snapshots, registry: registry)
+    }
+
+    func removeRemoteSnapshots(for deviceID: String) {
+        remoteSnapshotsByDevice[deviceID] = nil
+    }
+
+    func shareableSnapshots() -> [String: ProviderSnapshot] {
+        LANUsageAggregator.shareableSnapshots(
+            snapshots.filter { isProviderEnabled($0.key) },
+            registry: registry
+        )
     }
 
     /// How long a displayed snapshot may age before the header calls it out. A healthy provider's
