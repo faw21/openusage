@@ -30,8 +30,10 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_DISPLAY.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_HELPERS="$APP_CONTENTS/Helpers"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$TARGET_NAME"
+CLI_BINARY="$APP_HELPERS/openusage"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 RESOURCE_BUNDLE_NAME="${TARGET_NAME}_${TARGET_NAME}.bundle"
 ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.dev.entitlements.plist"
@@ -42,17 +44,24 @@ echo "==> swift build ($CONFIG)"
 swift build -c "$CONFIG"
 BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$TARGET_NAME"
+BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 
 if [ ! -x "$BUILD_BINARY" ]; then
   echo "missing built binary: $BUILD_BINARY" >&2
   exit 1
 fi
+if [ ! -x "$BUILD_CLI_BINARY" ]; then
+  echo "missing built CLI: $BUILD_CLI_BINARY" >&2
+  exit 1
+fi
 
 echo "==> staging $APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES"
+mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
+cp "$BUILD_CLI_BINARY" "$CLI_BINARY"
 chmod +x "$APP_BINARY"
+chmod +x "$CLI_BINARY"
 
 # SwiftPM stamps LC_BUILD_VERSION's `sdk` field with the deployment target (macOS 15), not the real
 # SDK it compiled against. macOS gates the modern Liquid Glass control appearance (pop-up buttons,
@@ -148,6 +157,7 @@ fi
 "$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime"
 
 if [ -n "$CODESIGN_IDENTITY" ]; then
+  /usr/bin/codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$CLI_BINARY" >/dev/null
   # Not --deep: the Sparkle framework is already signed above and must keep that signature.
   /usr/bin/codesign --force --options runtime \
     --sign "$CODESIGN_IDENTITY" \
@@ -155,6 +165,7 @@ if [ -n "$CODESIGN_IDENTITY" ]; then
     "$APP_BUNDLE" >/dev/null
   echo "==> signed with: $CODESIGN_IDENTITY"
 else
+  /usr/bin/codesign --force --sign - "$CLI_BINARY" >/dev/null
   /usr/bin/codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE" >/dev/null
   echo "WARNING: no Apple Development identity found; ad-hoc signed." >&2
 fi

@@ -14,6 +14,7 @@ What the app does and how it behaves. These pages describe **behavior, not visua
 
 ## Integrations
 
+- [Command-line interface](cli.md) — terminal rendering and agent-friendly JSON
 - [Local HTTP API](local-http-api.md) — read your usage from other apps on `127.0.0.1:6736`
 - [Proxy](proxy.md) — route provider requests through SOCKS5 or HTTP(S)
 

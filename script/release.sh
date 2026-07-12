@@ -44,8 +44,10 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_HELPERS="$APP_CONTENTS/Helpers"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
+CLI_BINARY="$APP_HELPERS/openusage"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 # dSYMs for crash symbolication (uploaded to PostHog by release.yml). A folder, since posthog-cli's
 # `dsym upload --directory` and Sparkle both want a directory of bundles, not a single path.
@@ -81,17 +83,23 @@ echo "==> building $APP_NAME $VERSION ($BUILD) — universal (arm64 + x86_64)"
 swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g
 BUILD_DIR="$(swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$APP_NAME"
+BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 [ -x "$BUILD_BINARY" ] || { echo "missing built binary: $BUILD_BINARY" >&2; exit 1; }
+[ -x "$BUILD_CLI_BINARY" ] || { echo "missing built CLI: $BUILD_CLI_BINARY" >&2; exit 1; }
 
 echo "==> staging $APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES"
+mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
+cp "$BUILD_CLI_BINARY" "$CLI_BINARY"
 chmod +x "$APP_BINARY"
+chmod +x "$CLI_BINARY"
 # Fail loudly if the build ever silently regresses to a single arch (e.g. a dropped --arch flag): a
 # fat binary is the whole point, and generate_appcast derives Sparkle's hardwareRequirements from it.
 lipo -archs "$APP_BINARY" | grep -q "x86_64" && lipo -archs "$APP_BINARY" | grep -q "arm64" \
   || { echo "Expected a universal (arm64 + x86_64) binary, got: $(lipo -archs "$APP_BINARY")" >&2; exit 1; }
+lipo -archs "$CLI_BINARY" | grep -q "x86_64" && lipo -archs "$CLI_BINARY" | grep -q "arm64" \
+  || { echo "Expected a universal CLI, got: $(lipo -archs "$CLI_BINARY")" >&2; exit 1; }
 
 # SwiftPM stamps LC_BUILD_VERSION's `sdk` field with the deployment target (macOS 15), not the real
 # SDK it compiled against. macOS gates the modern Liquid Glass control appearance (pop-up buttons,
@@ -176,6 +184,9 @@ PLIST
 
 # Embed + sign Sparkle (Developer ID, hardened runtime, secure timestamp).
 "$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime --timestamp"
+
+echo "==> signing bundled CLI"
+codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$CLI_BINARY"
 
 echo "==> signing app (Developer ID, hardened runtime)"
 # Not --deep: the Sparkle framework is signed above and must keep that signature. No get-task-allow

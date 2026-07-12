@@ -1,5 +1,8 @@
 # Local HTTP API
 
+For terminal and agent use, prefer the bundled [`openusage` command](cli.md). It handles app startup,
+terminal rendering, and automatic JSON output while keeping this wire format available to scripts.
+
 OpenUsage exposes a read-only HTTP API on the loopback interface so other local apps can consume the same usage data shown in the menu bar.
 
 **Base URL:** `http://127.0.0.1:6736`

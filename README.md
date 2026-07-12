@@ -43,6 +43,7 @@ Most providers read the credentials already on your machine (keychain, auth file
 - **Customize.** Turn providers and metrics on or off, choose which rows stay Always Visible or On Demand, and drag-reorder both.
 - **Stale-while-revalidate.** Cached values display instantly at launch; refresh runs every 5 minutes.
 - **[Local HTTP API](docs/local-http-api.md).** Other apps can read your usage as JSON from `127.0.0.1:6736` (`/v1/usage`), same format as the original app. It is loopback-only and serves usage numbers, never credentials; note that browser pages can read it too — see the [privacy note](docs/local-http-api.md#cors-and-privacy).
+- **[Agent-friendly CLI](docs/cli.md).** `openusage` renders usage in a terminal and emits stable JSON when piped. It reuses the running app's provider sessions, requires no additional API keys, and updates with the app.
 - **[Proxy support](docs/proxy.md).** Route provider requests through SOCKS5 or HTTP(S) via `~/.openusage/config.json`.
 - **Native settings.** Launch at login, global shortcut, icon style, theme, density, 12/24-hour time — see [Settings](docs/settings.md).
 - **[Automatic updates](docs/updates.md).** Signed, notarized in-app updates via Sparkle, with an optional beta channel.
