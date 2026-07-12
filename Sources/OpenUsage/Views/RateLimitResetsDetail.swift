@@ -45,12 +45,13 @@ struct RateLimitResetsDetail: View {
     @State private var redeemRequestIDs: [Date: String] = [:]
     /// The result banner shown above the timeline after a claim resolves.
     @State private var banner: Banner?
-    /// True once a claim in this popover session reset usage (or the server said there's nothing to
-    /// reset): the remaining "Use" buttons disable with a tooltip, because a freshly reset account has
-    /// nothing left to reset and a second claim would just burn a credit for `nothing_to_reset`'s
-    /// refusal. Cleared when the popover closes (fresh @State) — by then real usage may have resumed,
-    /// and the server refuses a pointless claim without spending the credit anyway.
-    @State private var usageAtZero = false
+    /// True once this popover session learned there's nothing left to reset — either a claim just
+    /// reset usage, or the server refused one with `nothing_to_reset` (which spends no credit). The
+    /// remaining "Use" buttons disable with a tooltip: another claim right now would be refused the
+    /// same way. Deliberately NOT "usage is at 0%" — after a refusal we only know the server's verdict,
+    /// not the meter reading. Cleared when the popover closes (fresh @State) — by then real usage may
+    /// have resumed, and the server refuses a pointless claim without spending the credit anyway.
+    @State private var nothingToReset = false
 
     private static let width: CGFloat = 250
 
@@ -272,8 +273,8 @@ struct RateLimitResetsDetail: View {
             if claim != nil, hoveredExpiry == entry.date, !claimInProgress {
                 Button("Use") { beginConfirm(entry.date) }
                     .controlSize(.small)
-                    .disabled(usageAtZero)
-                    .hoverTooltip(usageAtZero ? "Usage is already at 0%, nothing to reset" : nil)
+                    .disabled(nothingToReset)
+                    .hoverTooltip(nothingToReset ? "Nothing to reset right now" : nil)
                     .transition(.opacity)
             } else if let countdown = entry.countdown {
                 Text(countdown)
@@ -400,10 +401,10 @@ struct RateLimitResetsDetail: View {
         switch outcome {
         case .success:
             claimedExpiries.insert(date)
-            usageAtZero = true
+            nothingToReset = true
             banner = .init(text: "Reset claimed. Enjoy!", icon: "checkmark.circle.fill", tint: .green)
         case .nothingToReset:
-            usageAtZero = true
+            nothingToReset = true
             banner = .init(text: "Your usage doesn't need a reset yet", icon: "info.circle.fill", tint: .accentColor)
         case .noCredit:
             claimedExpiries.insert(date)
