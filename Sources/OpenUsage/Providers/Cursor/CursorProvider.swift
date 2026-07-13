@@ -31,13 +31,19 @@ final class CursorProvider: ProviderRuntime {
 
     var widgetDescriptors: [WidgetDescriptor] {
         [
-            .percent(id: "cursor.usage", provider: provider, title: "Total Usage", metricLabel: "Total usage"),
-            .percent(id: "cursor.auto", provider: provider, title: "Auto Usage", metricLabel: "Auto usage"),
-            .percent(id: "cursor.api", provider: provider, title: "API Usage", metricLabel: "API usage"),
-            .boundedDollars(id: "cursor.onDemand", provider: provider, title: "Extra Usage", metricLabel: "On-demand", limit: 100, valueWord: "spent"),
+            .percent(id: "cursor.usage", provider: provider, title: "Total Usage", metricLabel: "Total usage")
+                .exportingLimit("totalUsage", unit: "percent"),
+            .percent(id: "cursor.auto", provider: provider, title: "Auto Usage", metricLabel: "Auto usage")
+                .exportingLimit("autoUsage", unit: "percent"),
+            .percent(id: "cursor.api", provider: provider, title: "API Usage", metricLabel: "API usage")
+                .exportingLimit("apiUsage", unit: "percent"),
+            .boundedDollars(id: "cursor.onDemand", provider: provider, title: "Extra Usage", metricLabel: "On-demand", limit: 100, valueWord: "spent")
+                .exportingLimit("onDemand", unit: "usd", source: .progressOrValue(kind: .dollars)),
             .boundedCount(id: "cursor.requests", provider: provider, title: "Requests", limit: 500,
-                          suffix: "requests", periodDurationMs: CursorUsageMapper.billingPeriodMs),
-            .dollarBalance(id: "cursor.credits", provider: provider, title: "Credits", valueWord: "left"),
+                          suffix: "requests", periodDurationMs: CursorUsageMapper.billingPeriodMs)
+                .exportingLimit("requests", unit: "requests"),
+            .dollarBalance(id: "cursor.credits", provider: provider, title: "Credits", valueWord: "left")
+                .exportingLimit("credits", kind: .balance, unit: "usd", source: .value(kind: .dollars)),
             .usageTrend(provider: provider)
         ] + WidgetDescriptor.spendTiles(
             provider: provider,

@@ -26,7 +26,9 @@ globals, which keeps the pieces testable in isolation.
 
 The `openusage` executable imports the same module. A normal invocation reads `ProviderSnapshotCache`
 and exits; `--force` constructs the canonical `ProviderCatalog` and calls `WidgetDataStore`'s forced
-refresh path before reading. It never launches the GUI or duplicates provider, auth, or pricing logic.
+refresh path before reading. Providers annotate the scalar resources they export through the stable
+limits contract; the CLI and `/v1/limits` share one serializer over those same normalized snapshots.
+It never launches the GUI or duplicates provider, auth, pricing, or mapping logic.
 
 ## The provider pipeline
 

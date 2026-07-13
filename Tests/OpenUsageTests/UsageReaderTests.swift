@@ -4,11 +4,18 @@ import XCTest
 @MainActor
 final class UsageReaderTests: XCTestCase {
     private final class StubProvider: ProviderRuntime {
-        let provider = Provider(id: "stub", displayName: "Stub", icon: .providerMark("stub"))
-        var widgetDescriptors: [WidgetDescriptor] { [] }
+        let provider: Provider
+        var widgetDescriptors: [WidgetDescriptor] {
+            [WidgetDescriptor.percent(id: "\(provider.id).weekly", provider: provider, title: "Weekly")
+                .exportingLimit("weekly", unit: "percent")]
+        }
         var refreshCount = 0
         var refreshError: String?
         var refreshedAt = Date()
+
+        init(id: String = "stub") {
+            self.provider = Provider(id: id, displayName: id.capitalized, icon: .providerMark(id))
+        }
 
         func hasLocalCredentials() async -> Bool { true }
 
@@ -42,7 +49,7 @@ final class UsageReaderTests: XCTestCase {
         let result = try await UsageReader(userDefaults: defaults, providers: [provider]).read(providerID: "stub")
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: result.data) as? [String: Any])
 
-        XCTAssertEqual(object["providerId"] as? String, "stub")
+        XCTAssertNotNil((object["providers"] as? [String: Any])?["stub"])
         XCTAssertEqual(provider.refreshCount, 0)
         XCTAssertTrue(result.warnings.isEmpty)
     }
@@ -57,7 +64,7 @@ final class UsageReaderTests: XCTestCase {
         let cached = ProviderSnapshotCache(userDefaults: defaults).loadSnapshots(providerIDs: ["stub"])
 
         XCTAssertEqual(provider.refreshCount, 1)
-        XCTAssertEqual(object["providerId"] as? String, "stub")
+        XCTAssertNotNil((object["providers"] as? [String: Any])?["stub"])
         XCTAssertEqual(cached["stub"]?.line(label: "Weekly"), .progress(
             label: "Weekly",
             used: 20,
@@ -80,8 +87,20 @@ final class UsageReaderTests: XCTestCase {
         let result = try await UsageReader(userDefaults: defaults, providers: [provider]).read(providerID: "stub")
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: result.data) as? [String: Any])
 
-        XCTAssertEqual(object["providerId"] as? String, "stub")
+        XCTAssertNotNil((object["providers"] as? [String: Any])?["stub"])
         XCTAssertEqual(provider.refreshCount, 1)
+    }
+
+    func testForcedProviderReadRefreshesOnlyRequestedProvider() async throws {
+        let defaults = defaults()
+        let requested = StubProvider(id: "requested")
+        let other = StubProvider(id: "other")
+
+        _ = try await UsageReader(userDefaults: defaults, providers: [requested, other])
+            .read(providerID: "requested", force: true)
+
+        XCTAssertEqual(requested.refreshCount, 1)
+        XCTAssertEqual(other.refreshCount, 0)
     }
 
     func testUnknownProviderFailsBeforeRefresh() async {

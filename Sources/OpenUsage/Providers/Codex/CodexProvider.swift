@@ -34,15 +34,22 @@ final class CodexProvider: ProviderRuntime {
 
     var widgetDescriptors: [WidgetDescriptor] {
         [
-            .percent(id: "codex.session", provider: provider, title: "Session"),
-            .percent(id: "codex.weekly", provider: provider, title: "Weekly"),
+            .percent(id: "codex.session", provider: provider, title: "Session")
+                .exportingLimit("session", unit: "percent"),
+            .percent(id: "codex.weekly", provider: provider, title: "Weekly")
+                .exportingLimit("weekly", unit: "percent"),
             // Model-specific Spark limits (GPT-5.3-Codex-Spark), parsed from `additional_rate_limits`.
             // Declared right after Weekly so they group with the core rate-limit meters; seeded On
             // Demand (below the caret) and unpinned in `DefaultLayout`.
-            .percent(id: "codex.spark", provider: provider, title: "Spark"),
-            .percent(id: "codex.sparkWeekly", provider: provider, title: "Spark Weekly"),
-            .combined(id: "codex.credits", provider: provider, title: "Extra Usage", metricLabel: "Credits"),
-            .values(id: "codex.rateLimitResets", provider: provider, title: "Rate Limit Resets", metricLabel: "Rate Limit Resets", traySuffix: "resets", showsResetExpiries: true),
+            .percent(id: "codex.spark", provider: provider, title: "Spark")
+                .exportingLimit("spark", unit: "percent"),
+            .percent(id: "codex.sparkWeekly", provider: provider, title: "Spark Weekly")
+                .exportingLimit("sparkWeekly", unit: "percent"),
+            .combined(id: "codex.credits", provider: provider, title: "Extra Usage", metricLabel: "Credits")
+                .exportingLimit("credits", kind: .balance, unit: "credits", source: .value(kind: .count, label: "credits"))
+                .exportingLimit("creditValue", kind: .balance, unit: "usd", source: .value(kind: .dollars)),
+            .values(id: "codex.rateLimitResets", provider: provider, title: "Rate Limit Resets", metricLabel: "Rate Limit Resets", traySuffix: "resets", showsResetExpiries: true)
+                .exportingLimit("rateLimitResets", kind: .balance, unit: "resets", source: .value(kind: .count, label: "available")),
             .usageTrend(provider: provider)
         ] + WidgetDescriptor.spendTiles(provider: provider)
     }

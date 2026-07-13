@@ -1,7 +1,9 @@
 # Command-Line Interface
 
-OpenUsage ships a one-shot `openusage` command for agents and scripts. It prints the documented usage
-JSON and exits; it never launches or leaves the menu-bar app running.
+OpenUsage ships a one-shot `openusage` command for agents and scripts. It prints the documented
+[`/v1/limits`](local-http-api.md#get-v1limits) JSON and exits; it never launches or leaves the menu-bar
+app running. The output contains stable scalar limits and balances, not UI rows, colors, subtitles,
+charts, or spend-history tiles.
 
 ```sh
 openusage                 # every enabled provider, refreshing stale cache entries
@@ -16,18 +18,9 @@ writes successful results to the same cache. Credentials are used locally and ne
 
 ## Install on `PATH`
 
-The signed executable lives at `OpenUsage.app/Contents/Helpers/openusage`. The Homebrew cask exposes
-that helper as the global `openusage` command and owns the symlink across upgrades and uninstalls.
-
-For a direct-download app in `/Applications`, create a user-owned link instead:
-
-```sh
-mkdir -p ~/.local/bin
-ln -sf /Applications/OpenUsage.app/Contents/Helpers/openusage ~/.local/bin/openusage
-```
-
-Make sure `~/.local/bin` is on your shell's `PATH`. The link stays current when Sparkle replaces the app
-in place.
+In OpenUsage, open **Settings → Command Line** and click **Install…**. After the standard macOS
+administrator prompt, `openusage` is available globally in new terminal sessions. The installed symlink
+points to the signed helper inside OpenUsage, so in-place app updates also update the command.
 
 Exit codes are `0` for success, `2` for invalid arguments, `3` when a requested provider has no snapshot,
 and `4` when a refresh or local read fails.

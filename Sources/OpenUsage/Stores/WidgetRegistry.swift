@@ -44,6 +44,10 @@ struct WidgetRegistry: Sendable {
         descriptorsByProvider[providerID] ?? []
     }
 
+    var limitDescriptorsByProvider: [String: [WidgetDescriptor]] {
+        descriptorsByProvider.mapValues { $0.filter { !$0.limitResources.isEmpty } }
+    }
+
     @MainActor
     static func from(_ runtimes: [ProviderRuntime]) -> WidgetRegistry {
         let providers = runtimes.map(\.provider)

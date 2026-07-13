@@ -64,9 +64,12 @@ final class OpenCodeProvider: ProviderRuntime {
         // Go plan caps read from local `opencode-go` spend (Session/Weekly above the fold, Monthly on
         // demand); the spend tiles + trend below sum combined OpenCode-hosted (Go + Zen) spend.
         [
-            .boundedDollars(id: "opencode.session", provider: provider, title: "Session", limit: OpenCodeUsageMapper.sessionCap),
-            .boundedDollars(id: "opencode.weekly", provider: provider, title: "Weekly", limit: OpenCodeUsageMapper.weeklyCap),
-            .boundedDollars(id: "opencode.monthly", provider: provider, title: "Monthly", limit: OpenCodeUsageMapper.monthlyCap),
+            .boundedDollars(id: "opencode.session", provider: provider, title: "Session", limit: OpenCodeUsageMapper.sessionCap)
+                .exportingLimit("session", unit: "usd", estimated: true),
+            .boundedDollars(id: "opencode.weekly", provider: provider, title: "Weekly", limit: OpenCodeUsageMapper.weeklyCap)
+                .exportingLimit("weekly", unit: "usd", estimated: true),
+            .boundedDollars(id: "opencode.monthly", provider: provider, title: "Monthly", limit: OpenCodeUsageMapper.monthlyCap)
+                .exportingLimit("monthly", unit: "usd", estimated: true),
             .usageTrend(provider: provider)
         ] + WidgetDescriptor.spendTiles(provider: provider)
     }

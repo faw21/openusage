@@ -60,6 +60,7 @@ public struct UsageReader {
         let needsRefresh = force || enabledOrderedIDs.contains { cache.snapshot(providerID: $0) == nil }
         var snapshots = cachedSnapshots
         var warnings: [String] = []
+        var errors: [String: String] = [:]
 
         if needsRefresh {
             LoginShellEnvironment.shared.prewarm()
@@ -76,16 +77,19 @@ public struct UsageReader {
                 await dataStore.refreshAll(force: force)
             }
             snapshots = dataStore.snapshots
+            errors = dataStore.providerErrors
             warnings = orderedProviderIDs(registry: registry)
-                .compactMap { id in dataStore.providerErrors[id].map { "\(id): \($0)" } }
+                .compactMap { id in errors[id].map { "\(id): \($0)" } }
         }
 
         let state = LocalUsageAPI.State(
             enabledOrderedIDs: enabledOrderedIDs,
             knownIDs: knownIDs,
-            snapshots: snapshots
+            snapshots: snapshots,
+            limitDescriptors: registry.limitDescriptorsByProvider,
+            errors: errors
         )
-        let path = providerID.map { "/v1/usage/\($0)" } ?? "/v1/usage"
+        let path = providerID.map { "/v1/limits/\($0)" } ?? "/v1/limits"
         let response = LocalUsageAPI.respond(method: "GET", path: path, state: state)
         guard let data = response.body else {
             if let warning = warnings.first {

@@ -175,7 +175,9 @@ final class AppContainer {
             LocalUsageAPI.State(
                 enabledOrderedIDs: layout.providerOrder.filter { enablement.isEnabled($0) },
                 knownIDs: Set(registry.providers.map(\.id)),
-                snapshots: dataStore.snapshots
+                snapshots: dataStore.snapshots,
+                limitDescriptors: registry.limitDescriptorsByProvider,
+                errors: dataStore.providerErrors
             )
         })
         self.refreshTask = Self.startPeriodicRefresh(dataStore: dataStore, telemetry: telemetry)

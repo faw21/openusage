@@ -45,11 +45,16 @@ final class ClaudeProvider: ProviderRuntime {
 
     var widgetDescriptors: [WidgetDescriptor] {
         [
-            .percent(id: "claude.session", provider: provider, title: "Session", isSessionWindow: true),
-            .percent(id: "claude.weekly", provider: provider, title: "Weekly"),
-            .percent(id: "claude.sonnet", provider: provider, title: "Sonnet"),
-            .percent(id: "claude.fable", provider: provider, title: "Fable"),
-            .boundedDollars(id: "claude.extra", provider: provider, title: "Extra Usage", metricLabel: "Extra usage spent", limit: 100, valueWord: "spent"),
+            .percent(id: "claude.session", provider: provider, title: "Session", isSessionWindow: true)
+                .exportingLimit("session", unit: "percent"),
+            .percent(id: "claude.weekly", provider: provider, title: "Weekly")
+                .exportingLimit("weekly", unit: "percent"),
+            .percent(id: "claude.sonnet", provider: provider, title: "Sonnet")
+                .exportingLimit("sonnet", unit: "percent"),
+            .percent(id: "claude.fable", provider: provider, title: "Fable")
+                .exportingLimit("fable", unit: "percent"),
+            .boundedDollars(id: "claude.extra", provider: provider, title: "Extra Usage", metricLabel: "Extra usage spent", limit: 100, valueWord: "spent")
+                .exportingLimit("extraUsage", unit: "usd", source: .progressOrValue(kind: .dollars)),
             .usageTrend(provider: provider)
         ] + WidgetDescriptor.spendTiles(provider: provider)
     }

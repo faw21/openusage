@@ -33,7 +33,8 @@ final class GrokProvider: ProviderRuntime {
 
     var widgetDescriptors: [WidgetDescriptor] {
         [
-            .percent(id: "grok.weekly", provider: provider, title: "Weekly", metricLabel: "Weekly limit"),
+            .percent(id: "grok.weekly", provider: provider, title: "Weekly", metricLabel: "Weekly limit")
+                .exportingLimit("weekly", unit: "percent"),
             .badge(id: "grok.payAsYouGo", provider: provider, title: "Extra Usage", metricLabel: "Pay as you go"),
             .usageTrend(provider: provider)
             // Local spend tiles, estimated from the Grok CLI log (see GrokLogUsageScanner).

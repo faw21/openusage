@@ -56,7 +56,7 @@ struct OpenUsageCLI {
     private static let help = """
     Usage: openusage [provider] [--force]
 
-    Read usage through OpenUsage's shared five-minute cache and exit. Output is always JSON.
+    Read limits through OpenUsage's shared five-minute cache and exit. Output is always JSON.
 
     Options:
       --force      Refresh even when the shared cache is still fresh
