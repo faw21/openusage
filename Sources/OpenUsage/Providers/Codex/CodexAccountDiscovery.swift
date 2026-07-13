@@ -91,11 +91,20 @@ struct CodexAccountDiscovery {
     }
 
     /// Every `cli|…` login item under the shared service. Non-`cli|` accounts (the Secrets-mode
-    /// passphrase entries live under a different service entirely, but be conservative) are ignored.
+    /// passphrase entries live under a different service entirely, but be conservative) are ignored,
+    /// and so are never-rotated one-shot items — the same junk filter as Claude discovery (see
+    /// `KeychainItemSummary.showsOngoingUse`); a dir-backed account is exempt, its `auth.json` is
+    /// already a deliberate signal.
     private func enumeratedKeychainAccounts() -> Set<String> {
         do {
-            let accounts = try keychain.genericPasswordAccounts(forService: CodexAuthStore.keychainService)
-            return Set(accounts.filter { $0.hasPrefix("cli|") })
+            let items = try keychain.genericPasswordItems(withServicePrefix: CodexAuthStore.keychainService)
+            return Set(items.compactMap { item in
+                guard item.service == CodexAuthStore.keychainService,
+                      let account = item.account, account.hasPrefix("cli|"),
+                      item.showsOngoingUse()
+                else { return nil }
+                return account
+            })
         } catch {
             AppLog.warn(.keychain, "Codex account enumeration failed: \(error.localizedDescription)")
             return []

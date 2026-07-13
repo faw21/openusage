@@ -215,14 +215,30 @@ protocol KeychainAccessing: Sendable {
     /// Write a generic password scoped to an explicit account (`-a`), so a rotation targets the right
     /// item when several logins share one service (Codex keeps every login under `Codex Auth`).
     func writeGenericPassword(service: String, account: String, value: String) throws
-    /// Service names of every generic-password item whose service begins with `prefix`.
-    /// Attributes-only (never the secret data), so it enumerates without an ACL/unlock prompt. Used
-    /// by Claude multi-account discovery (`Claude Code-credentials*`, one service per login).
-    func genericPasswordServices(withPrefix prefix: String) throws -> [String]
-    /// Account names of every generic-password item stored under exactly `service`. Attributes-only,
-    /// same as above. Used by Codex multi-account discovery (service `Codex Auth`, one account
-    /// attribute per login).
-    func genericPasswordAccounts(forService service: String) throws -> [String]
+    /// Every generic-password item whose service begins with `prefix` — names and timestamps only,
+    /// never the secret data, so it enumerates without an ACL/unlock prompt. Used by multi-account
+    /// discovery: Claude lists `Claude Code-credentials*` (one service per login), Codex lists the
+    /// shared `Codex Auth` service (one account attribute per login). The creation/modification
+    /// dates feed the junk filter — a login that was written once and never rotated is a leftover
+    /// one-shot session, not an account.
+    func genericPasswordItems(withServicePrefix prefix: String) throws -> [KeychainItemSummary]
+}
+
+/// One keychain item's identity + timestamps from an attributes-only enumeration (no secret).
+struct KeychainItemSummary: Hashable, Sendable {
+    var service: String
+    var account: String?
+    var created: Date?
+    var modified: Date?
+
+    /// Whether the item shows real ongoing use: its stored secret was rewritten meaningfully after
+    /// creation (token rotation). One-shot sandbox logins are written once and abandoned, so their
+    /// modification date never leaves their creation date. Items without timestamps pass — hiding a
+    /// possible real account is worse than showing a rare stray.
+    func showsOngoingUse(threshold: TimeInterval = 24 * 60 * 60) -> Bool {
+        guard let created, let modified else { return true }
+        return modified.timeIntervalSince(created) > threshold
+    }
 }
 
 extension KeychainAccessing {
@@ -244,9 +260,8 @@ extension KeychainAccessing {
         try writeGenericPassword(service: service, value: value)
     }
 
-    /// Defaults for mocks that don't model enumeration: nothing to enumerate.
-    func genericPasswordServices(withPrefix prefix: String) throws -> [String] { [] }
-    func genericPasswordAccounts(forService service: String) throws -> [String] { [] }
+    /// Default for mocks that don't model enumeration: nothing to enumerate.
+    func genericPasswordItems(withServicePrefix prefix: String) throws -> [KeychainItemSummary] { [] }
 }
 
 struct SecurityKeychainAccessor: KeychainAccessing {
@@ -326,16 +341,18 @@ struct SecurityKeychainAccessor: KeychainAccessing {
     // `dump-keychain` prompts): `kSecReturnAttributes` with no `kSecReturnData` returns each item's
     // metadata without unlocking the secret, so no ACL prompt fires.
     // Adapted from PR #965 by Ryan George (@QuadDepo).
-    func genericPasswordServices(withPrefix prefix: String) throws -> [String] {
-        try enumerateGenericPasswordAttributes()
-            .compactMap { $0[kSecAttrService as String] as? String }
-            .filter { $0.hasPrefix(prefix) }
-    }
-
-    func genericPasswordAccounts(forService service: String) throws -> [String] {
-        try enumerateGenericPasswordAttributes()
-            .filter { ($0[kSecAttrService as String] as? String) == service }
-            .compactMap { $0[kSecAttrAccount as String] as? String }
+    func genericPasswordItems(withServicePrefix prefix: String) throws -> [KeychainItemSummary] {
+        try enumerateGenericPasswordAttributes().compactMap { item in
+            guard let service = item[kSecAttrService as String] as? String, service.hasPrefix(prefix) else {
+                return nil
+            }
+            return KeychainItemSummary(
+                service: service,
+                account: item[kSecAttrAccount as String] as? String,
+                created: item[kSecAttrCreationDate as String] as? Date,
+                modified: item[kSecAttrModificationDate as String] as? Date
+            )
+        }
     }
 
     private func enumerateGenericPasswordAttributes() throws -> [[String: Any]] {

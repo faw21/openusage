@@ -78,10 +78,14 @@ final class ProviderAccountsStore {
 
     /// Merge one provider's discovery results into the stored set: a record sharing a credential
     /// source keeps its UUID (absorbing any newly linked source), genuinely new sources get fresh
-    /// records, and records whose sources vanished are kept as-is. Returns the provider's records
+    /// records. Records discovery no longer returns are pruned UNLESS the user renamed them — a
+    /// rename is the user claiming the account, so it survives a vanished login (showing "Not logged
+    /// in" when selected) until they remove it themselves; an unclaimed record tracks discovery, so
+    /// junk that a smarter filter later rejects cleans itself up. Returns the provider's records
     /// after the merge.
     @discardableResult
     func reconcile(providerID: String, discovered: [DiscoveredAccount]) -> [ProviderAccount] {
+        var matchedIDs = Set<UUID>()
         for source in discovered {
             if let index = accounts.firstIndex(where: { $0.providerID == providerID && $0.matches(source) }) {
                 if let dir = source.configDir { accounts[index].configDir = dir }
@@ -89,16 +93,32 @@ final class ProviderAccountsStore {
                     accounts[index].keychainService = service
                     accounts[index].keychainAccount = source.keychainAccount
                 }
-                collapseSubsumedRecords(into: accounts[index].id)
+                let survivorID = accounts[index].id
+                matchedIDs.insert(survivorID)
+                collapseSubsumedRecords(into: survivorID)
             } else {
-                accounts.append(ProviderAccount(
+                let record = ProviderAccount(
                     id: UUID(),
                     providerID: providerID,
                     configDir: source.configDir,
                     keychainService: source.keychainService,
                     keychainAccount: source.keychainAccount,
                     customName: nil
-                ))
+                )
+                matchedIDs.insert(record.id)
+                accounts.append(record)
+            }
+        }
+        let pruned = accounts.filter {
+            $0.providerID == providerID && !matchedIDs.contains($0.id) && $0.customName == nil
+        }
+        if !pruned.isEmpty {
+            AppLog.info(.config, "pruned \(pruned.count) undiscovered unnamed \(providerID) account record(s)")
+            let prunedIDs = Set(pruned.map(\.id))
+            accounts.removeAll { prunedIDs.contains($0.id) }
+            if let selected = selection[providerID], prunedIDs.contains(selected) {
+                selection[providerID] = nil
+                persistSelection()
             }
         }
         persistAccounts()

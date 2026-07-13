@@ -26,23 +26,23 @@ final class ProviderAccountsTests: XCTestCase {
         XCTAssertEqual(second[0].displayName, "Work")
     }
 
-    func testReconcileCollapsesFileOnlyAndKeychainOnlyRecordsOnceLinked() {
+    func testReconcileCollapsesARenamedOrphanOnceDiscoveryLinksTheSources() {
         let store = ProviderAccountsStore(defaults: makeUserDefaults("reconcile-collapse"))
         let dir = "\(home)/.codex-work"
         let account = "cli|deadbeefdeadbeef"
 
-        // Two prior runs each saw only one side of the same account.
+        // One run saw the dir only; the user claimed it with a rename (so it survives pruning).
         let fileOnly = store.reconcile(providerID: "codex", discovered: [
             DiscoveredAccount(configDir: dir, keychainService: nil, keychainAccount: nil)
         ])
         let fileOnlyID = fileOnly[0].id
+        store.setCustomName("Work", forID: fileOnlyID)
+        // A later run saw only the keychain side (keyring mode deleted auth.json), stranding a
+        // second record for the same login beside the renamed one.
         store.reconcile(providerID: "codex", discovered: [
             DiscoveredAccount(configDir: nil, keychainService: CodexAuthStore.keychainService, keychainAccount: account)
         ])
         XCTAssertEqual(store.accounts(for: "codex").count, 2)
-        // The rename lives on the newer keychain-only record.
-        let keychainOnlyID = store.accounts(for: "codex").first { $0.id != fileOnlyID }!.id
-        store.setCustomName("Work", forID: keychainOnlyID)
 
         // Discovery now links both sources into one account.
         let merged = store.reconcile(providerID: "codex", discovered: [
@@ -50,10 +50,10 @@ final class ProviderAccountsTests: XCTestCase {
         ])
 
         XCTAssertEqual(merged.count, 1, "the stranded orphan must collapse, not stay a second picker entry")
-        XCTAssertEqual(merged[0].id, fileOnlyID, "the older record's UUID survives")
+        XCTAssertEqual(merged[0].id, fileOnlyID, "the renamed record's UUID survives")
         XCTAssertEqual(merged[0].configDir, dir)
         XCTAssertEqual(merged[0].keychainAccount, account)
-        XCTAssertEqual(merged[0].customName, "Work", "a custom name from the collapsed record is preserved")
+        XCTAssertEqual(merged[0].customName, "Work")
     }
 
     func testSelectionPersistsAndFallsBackOnRemove() {
@@ -87,6 +87,23 @@ final class ProviderAccountsTests: XCTestCase {
         XCTAssertEqual(store.selectedAccountKey(for: "codex"), "codex")
     }
 
+    func testReconcilePrunesUnnamedRecordsButKeepsRenamedOnes() {
+        let store = ProviderAccountsStore(defaults: makeUserDefaults("prune"))
+        let junk = DiscoveredAccount(configDir: nil, keychainService: "Claude Code-credentials-junk", keychainAccount: nil)
+        let real = DiscoveredAccount(configDir: nil, keychainService: "Claude Code-credentials-work", keychainAccount: nil)
+        let records = store.reconcile(providerID: "claude", discovered: [junk, real])
+        XCTAssertEqual(records.count, 2)
+        let realID = records.first { $0.keychainService == "Claude Code-credentials-work" }!.id
+        store.setCustomName("Work", forID: realID)
+        store.select(accountID: records.first { $0.id != realID }!.id, for: "claude")
+
+        // Next launch: discovery no longer returns either (junk filtered out, work login vanished).
+        let after = store.reconcile(providerID: "claude", discovered: [])
+
+        XCTAssertEqual(after.map(\.id), [realID], "the renamed record survives; the unclaimed one is pruned")
+        XCTAssertEqual(store.selectedAccountKey(for: "claude"), "claude", "a pruned selection falls back to the default account")
+    }
+
     // MARK: - Claude discovery (keychain-only)
 
     func testClaudeExtraKeychainServiceIsDiscovered() {
@@ -104,6 +121,30 @@ final class ProviderAccountsTests: XCTestCase {
         XCTAssertEqual(extras.count, 1)
         XCTAssertEqual(extras.first?.keychainService, "Claude Code-credentials-deadbeef")
         XCTAssertNil(extras.first?.configDir, "Claude discovery is keychain-only by design")
+    }
+
+    func testClaudeNeverRotatedOneShotLoginItemsAreNotAccounts() {
+        // Agent sandboxes leave one suffixed item per run, written once and never rotated. Only an
+        // item whose modification date moved meaningfully past creation is a real second login.
+        let created = Date(timeIntervalSince1970: 1_700_000_000)
+        let keychain = ServiceKeychain(values: [
+            "Claude Code-credentials": claudeCreds("default"),
+            "Claude Code-credentials-junk1": claudeCreds("sandbox"),
+            "Claude Code-credentials-junk2": claudeCreds("sandbox"),
+            "Claude Code-credentials-work": claudeCreds("work")
+        ])
+        keychain.itemDates = [
+            "Claude Code-credentials-junk1": (created: created, modified: created),
+            "Claude Code-credentials-junk2": (created: created, modified: created.addingTimeInterval(45 * 60)),
+            "Claude Code-credentials-work": (created: created, modified: created.addingTimeInterval(9 * 24 * 60 * 60))
+        ]
+
+        let extras = ClaudeAccountDiscovery(
+            authStore: ClaudeAuthStore(environment: FakeEnvironment(), files: FakeFiles(), keychain: keychain),
+            keychain: keychain
+        ).discoverExtraAccounts()
+
+        XCTAssertEqual(extras.map(\.keychainService), ["Claude Code-credentials-work"])
     }
 
     func testClaudeEnvConfigDirServiceBelongsToTheDefaultAccount() {

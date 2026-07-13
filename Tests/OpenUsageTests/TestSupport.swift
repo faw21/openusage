@@ -291,14 +291,28 @@ final class ServiceKeychain: KeychainAccessing, @unchecked Sendable {
         accountValues[service, default: [:]][account] = value
     }
 
-    func genericPasswordServices(withPrefix prefix: String) throws -> [String] {
-        Set(values.keys).union(currentUserValues.keys).union(accountValues.keys)
-            .filter { $0.hasPrefix(prefix) }
-            .sorted()
-    }
+    /// Optional item timestamps for the enumeration, keyed by service (service-keyed items) or
+    /// `"<service>|<account>"` (account-keyed items). Items without an entry enumerate with nil
+    /// dates, which the discovery junk filter deliberately passes (fail-open).
+    var itemDates: [String: (created: Date, modified: Date)] = [:]
 
-    func genericPasswordAccounts(forService service: String) throws -> [String] {
-        (accountValues[service]?.keys).map { $0.sorted() } ?? []
+    func genericPasswordItems(withServicePrefix prefix: String) throws -> [KeychainItemSummary] {
+        var summaries: [KeychainItemSummary] = []
+        for service in Set(values.keys).union(currentUserValues.keys) where service.hasPrefix(prefix) {
+            let dates = itemDates[service]
+            summaries.append(KeychainItemSummary(
+                service: service, account: nil, created: dates?.created, modified: dates?.modified
+            ))
+        }
+        for (service, byAccount) in accountValues where service.hasPrefix(prefix) {
+            for account in byAccount.keys.sorted() {
+                let dates = itemDates["\(service)|\(account)"]
+                summaries.append(KeychainItemSummary(
+                    service: service, account: account, created: dates?.created, modified: dates?.modified
+                ))
+            }
+        }
+        return summaries.sorted { ($0.service, $0.account ?? "") < ($1.service, $1.account ?? "") }
     }
 }
 

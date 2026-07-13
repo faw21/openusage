@@ -21,9 +21,9 @@ struct ClaudeAccountDiscovery {
     }
 
     func discoverExtraAccounts() -> [DiscoveredAccount] {
-        let enumerated: [String]
+        let enumerated: [KeychainItemSummary]
         do {
-            enumerated = try keychain.genericPasswordServices(withPrefix: authStore.baseKeychainService())
+            enumerated = try keychain.genericPasswordItems(withServicePrefix: authStore.baseKeychainService())
         } catch {
             AppLog.warn(.keychain, "Claude account enumeration failed: \(error.localizedDescription)")
             return []
@@ -31,8 +31,18 @@ struct ClaudeAccountDiscovery {
         // The default instance's own services (the bare service, plus the env `CLAUDE_CONFIG_DIR`
         // hash when set) belong to the default account, never to an extra one.
         let defaultServices = Set(authStore.keychainServiceCandidates())
-        return enumerated
-            .filter { !defaultServices.contains($0) }
+        // Junk filter: agent sandboxes and one-shot `CLAUDE_CONFIG_DIR` sessions leave a suffixed
+        // item per run — written once, never rotated — and they accumulate by the hundreds. A real
+        // second login keeps getting its token rotated, so only items whose modification date moved
+        // meaningfully past creation count as accounts (see `showsOngoingUse`). A brand-new real
+        // login therefore appears after about a day of use — the price of zero junk with no setup.
+        let candidates = enumerated.filter { !defaultServices.contains($0.service) && $0.showsOngoingUse() }
+        let skipped = enumerated.count { !defaultServices.contains($0.service) && !$0.showsOngoingUse() }
+        if skipped > 0 {
+            AppLog.info(.keychain, "Claude account discovery skipped \(skipped) never-rotated one-shot login item(s)")
+        }
+        return candidates
+            .map(\.service)
             .sorted()
             .map { DiscoveredAccount(configDir: nil, keychainService: $0, keychainAccount: nil) }
     }
