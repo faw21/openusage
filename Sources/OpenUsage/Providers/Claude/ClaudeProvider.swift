@@ -155,6 +155,19 @@ final class ClaudeProvider: ProviderRuntime {
         var lastFallbackError: ClaudeAuthError?
         var credentialGeneration = ClaudeCredentialGeneration(storedCandidates)
         for state in candidates {
+            // The environment token cannot read subscription usage. If a CLI login was rejected, try
+            // Desktop before this spend-only fallback can turn the refresh into a false success.
+            if !forceDesktopFallback,
+               lastFallbackError != nil,
+               credentialLoad.desktopStatus == .notChecked,
+               authStore.liveUsageAvailability(state) == .inferenceOnlyToken
+            {
+                return await refresh(
+                    credentialReloadsRemaining: credentialReloadsRemaining,
+                    forceDesktopFallback: true,
+                    previousFallbackError: lastFallbackError
+                )
+            }
             do {
                 let snapshot = try await probe(
                     state: state,

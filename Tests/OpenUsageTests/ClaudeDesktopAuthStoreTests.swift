@@ -307,6 +307,52 @@ final class ClaudeDesktopAuthStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testRevokedCLILoginTriesDesktopBeforeEnvironmentToken() async throws {
+        let fixture = try makeFixture(
+            activeOrganization: organization,
+            v2: [cacheKey(organization: organization): tokenEntry("desktop-token", expiresIn: 3_600)]
+        )
+        let now = now
+        let httpClient = RoutingHTTPClient { request in
+            let authorization = request.headers["Authorization"] ?? ""
+            if authorization.contains("desktop-token") {
+                return HTTPResponse(
+                    statusCode: 200,
+                    headers: [:],
+                    body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+                )
+            }
+            return HTTPResponse(statusCode: 401, headers: [:], body: Data())
+        }
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment([
+                    "CLAUDE_CONFIG_DIR": "/tmp/claude",
+                    "CLAUDE_CODE_OAUTH_TOKEN": "inference-only-env"
+                ]),
+                files: fixture.files,
+                keychain: FakeKeychain(
+                    #"{"claudeAiOauth":{"accessToken":"revoked-cli","expiresAt":4102444800000,"scopes":["user:profile"]}}"#
+                ),
+                desktop: fixture.store,
+                now: { now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: httpClient),
+            logUsageScanner: ClaudeLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await ProviderRefreshContext.$isManual.withValue(true) {
+            await provider.refresh()
+        }
+
+        XCTAssertNil(badge(snapshot.lines, "Error"))
+        XCTAssertEqual(httpClient.requests.count, 2)
+        XCTAssertTrue(httpClient.requests.last?.headers["Authorization"]?.contains("desktop-token") == true)
+    }
+
+    @MainActor
     func testStaleDesktopDoesNotMaskRevokedCLIError() async throws {
         let fixture = try makeFixture(
             activeOrganization: organization,

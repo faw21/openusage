@@ -202,33 +202,16 @@ struct ClaudeAuthStore: Sendable {
             $0.hasUsableAccessToken && liveUsageAvailability($0) == .available
         }
         if forceDesktopFallback || !hasUsableCLILogin {
-            if forceDesktopFallback, hasUsableCLILogin {
-                AppLog.info(LogTag.auth("claude"), "desktop load forced (CLI login present but falling through)")
-            }
             let result = desktop.load(allowInteraction: allowDesktopInteraction)
             desktopStatus = result.status
             if let oauth = result.oauth {
-                AppLog.info(
-                    LogTag.auth("claude"),
-                    "credential set: using desktop (status=\(desktopStatus) sub=\(oauth.subscriptionType ?? "<nil>") tier=\(oauth.rateLimitTier ?? "<nil>"))"
-                )
                 stored.insert(ClaudeCredentialState(
                     oauth: oauth,
                     source: .desktop,
                     fullData: nil,
                     inferenceOnly: false
                 ), at: 0)
-            } else {
-                AppLog.info(LogTag.auth("claude"), "credential set: desktop unavailable (status=\(desktopStatus))")
             }
-        } else {
-            let now = now()
-            let cli = stored
-                .filter { $0.hasUsableAccessToken && liveUsageAvailability($0) == .available }
-                .map { $0.diagnosticsLabel(now: now) }
-                .joined(separator: ", ")
-            AppLog.info(LogTag.auth("claude"), "credential set: skipping desktop (CLI login present: \(cli))")
-            desktopStatus = .notChecked
         }
 
         let candidates = applyingEnvironmentToken(to: stored)
