@@ -156,6 +156,10 @@ enum MenuBarPopover {
     /// quota pace notification banner).
     static var showHandler: (() -> Void)?
 
+    /// Installed by `StatusItemController` at launch; opens the popover directly on the Settings
+    /// screen. Used by the redirect in the app's stub `Settings` scene (see `OpenUsageApp`).
+    static var showSettingsHandler: (() -> Void)?
+
     /// Auto-resize bridge — the "single clock". SwiftUI owns the animated height and the AppKit panel
     /// is a passive follower: `applyHeight` is called once per animation frame from a SwiftUI
     /// `Animatable` modifier with the interpolated height, and the controller hops it onto the main

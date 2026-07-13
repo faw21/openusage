@@ -23,6 +23,10 @@ final class LANSyncStore {
     private(set) var incomingPairRequests: [LANIncomingPairRequest] = []
     private(set) var outgoingPairing: LANOutgoingPairing?
     private(set) var peerStates: [String: LANPeerSyncState] = [:]
+    /// True while a pairing handshake or approval prompt is on screen. The panel's outside-click
+    /// policy keeps the popover open in this state so a click on a system dialog (or a stray click
+    /// while comparing codes) doesn't tear the pairing UI down mid-flow.
+    var isPairingActive: Bool { outgoingPairing != nil || !incomingPairRequests.isEmpty }
     private(set) var serviceError: String?
 
     let deviceID: String
@@ -167,7 +171,12 @@ final class LANSyncStore {
     }
 
     private func startBrowser() {
-        let browser = NWBrowser(for: .bonjour(type: LANSyncProtocol.serviceType, domain: nil), using: .tcp)
+        // .bonjourWithTXTRecord is required: a plain .bonjour browse returns results with no metadata,
+        // so the id/version filter below would silently drop every discovered Mac.
+        let browser = NWBrowser(
+            for: .bonjourWithTXTRecord(type: LANSyncProtocol.serviceType, domain: nil),
+            using: .tcp
+        )
         browser.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in self?.browserStateChanged(state) }
         }

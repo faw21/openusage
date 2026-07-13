@@ -36,6 +36,7 @@ final class StatusItemController: NSObject {
         panel: panel,
         statusItem: statusItem,
         isMorphing: { [weak self] in self?.heightController.isMorphing ?? false },
+        isPairingActive: { [weak self] in self?.container.lanSync.isPairingActive ?? false },
         onInsidePanelClick: { [weak self] in self?.clearStrayFocus() },
         onDismiss: { [weak self] in self?.hidePanel() }
     )
@@ -117,6 +118,9 @@ final class StatusItemController: NSObject {
         MenuBarPopover.showHandler = { [weak self] in
             self?.container.layout.screen = .dashboard
             self?.showPopover()
+        }
+        MenuBarPopover.showSettingsHandler = { [weak self] in
+            self?.openSettings()
         }
 
         heightController.installBridge()

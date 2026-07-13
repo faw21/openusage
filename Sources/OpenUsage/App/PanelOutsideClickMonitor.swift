@@ -6,6 +6,7 @@ final class PanelOutsideClickMonitor {
     private let panel: MenuBarPanel
     private let statusItem: NSStatusItem
     private let isMorphing: () -> Bool
+    private let isPairingActive: () -> Bool
     private let onInsidePanelClick: () -> Void
     private let onDismiss: () -> Void
     private var monitors: [Any] = []
@@ -14,12 +15,14 @@ final class PanelOutsideClickMonitor {
         panel: MenuBarPanel,
         statusItem: NSStatusItem,
         isMorphing: @escaping () -> Bool,
+        isPairingActive: @escaping () -> Bool = { false },
         onInsidePanelClick: @escaping () -> Void,
         onDismiss: @escaping () -> Void
     ) {
         self.panel = panel
         self.statusItem = statusItem
         self.isMorphing = isMorphing
+        self.isPairingActive = isPairingActive
         self.onInsidePanelClick = onInsidePanelClick
         self.onDismiss = onDismiss
     }
@@ -70,6 +73,7 @@ final class PanelOutsideClickMonitor {
         let buttonWindowID = statusItem.button?.window.map(ObjectIdentifier.init)
         let context = PanelOutsideClickContext(
             isMorphing: isMorphing(),
+            isPairingActive: isPairingActive(),
             hasAttachedSheet: panel.attachedSheet != nil,
             isOnStatusButton: isOnStatusButton(screenPoint),
             isInsidePanel: isInsidePanel,
@@ -94,6 +98,7 @@ final class PanelOutsideClickMonitor {
 
 struct PanelOutsideClickContext {
     var isMorphing = false
+    var isPairingActive = false
     var hasAttachedSheet = false
     var isOnStatusButton = false
     var isInsidePanel = false
@@ -105,6 +110,10 @@ struct PanelOutsideClickContext {
 enum PanelOutsideClickPolicy {
     static func shouldKeepOpen(_ context: PanelOutsideClickContext) -> Bool {
         context.isMorphing
+            // A Nearby Macs pairing is mid-flight: the user may need to click a system permission
+            // dialog or read the comparison code, and either would otherwise read as an outside
+            // click and dismiss the pairing UI. Explicit dismissals (Esc, status-item click) still work.
+            || context.isPairingActive
             || context.hasAttachedSheet
             || context.isOnStatusButton
             || context.isInsidePanel

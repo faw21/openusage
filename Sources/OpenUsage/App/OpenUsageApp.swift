@@ -8,11 +8,39 @@ struct OpenUsageApp: App {
     var body: some Scene {
         // Menu-bar app: the status item and custom panel are AppKit-owned (see StatusItemController),
         // so no window scene is wanted. `Settings` gives SwiftUI a valid scene without creating
-        // an activation window.
+        // an activation window. macOS can still open this scene (⌘, or the app menu whenever the
+        // app gets activated, e.g. by a system permission dialog), which used to show a bare empty
+        // window — the redirect view closes it and opens the real in-popover Settings screen instead.
         Settings {
-            EmptyView()
+            SettingsWindowRedirect()
         }
     }
+}
+
+/// Content of the stub SwiftUI `Settings` scene: immediately closes its own window and routes the
+/// user to the in-popover Settings screen instead.
+private struct SettingsWindowRedirect: View {
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .background(SettingsWindowCloser())
+    }
+}
+
+/// Resolves the hosting `NSWindow` directly (no title/identifier guessing) and closes it on the next
+/// runloop tick, after ordering the in-popover Settings screen open.
+private struct SettingsWindowCloser: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        Task { @MainActor [weak view] in
+            guard let window = view?.window else { return }
+            MenuBarPopover.showSettingsHandler?()
+            window.close()
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 @MainActor
