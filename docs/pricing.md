@@ -1,12 +1,12 @@
 # Model Pricing
 
-How OpenUsage turns token counts into the estimated dollars on the spend tiles (Claude, Codex, Cursor, Grok). OpenRouter and OpenCode are the exceptions: OpenRouter's API reports billed dollars directly, and OpenCode records its own per-message cost in its local logs, so nothing here applies to them.
+How OpenUsage turns token counts into the estimated dollars on the spend tiles (Claude, Codex, Cursor, Grok, and OpenCode). OpenRouter's API reports billed dollars directly. OpenCode keeps the API-rate value already derived in its logs when positive, and zero-cost external messages use this pricing engine so subscription-backed activity can show the same kind of estimate.
 
 ## Where prices come from
 
 Prices are layered from three sources; when the same model appears in more than one, the higher layer wins:
 
-1. **OpenUsage pricing supplement** — a small JSON file maintained in this repo and published to GitHub Pages. It covers models no public catalog carries (Cursor-native models like `auto` and `composer-*`), fast-variant multipliers, and alias rules that map provider log/CSV slugs to catalog keys.
+1. **OpenUsage pricing supplement** — a small JSON file maintained in this repo and published to GitHub Pages. It covers models or pricing tiers the public catalogs do not yet carry (including Cursor-native models like `auto` and `composer-*`), fast-variant multipliers, and alias rules that map provider log/CSV slugs to catalog keys.
 2. **LiteLLM** — the community-maintained `model_prices_and_context_window.json`, covering the vast majority of API-priced models.
 3. **models.dev** — a gap-filler for models LiteLLM misses (e.g. some brand-new or niche models).
 
@@ -22,7 +22,7 @@ A model no source can price is left out of the spend figures entirely — its to
 
 ## What the estimate includes
 
-Costs are computed per usage event from four token buckets — plain input, cache writes, cache reads, and output — at the model's per-million-token rates, including 1-hour cache-write pricing, the >200k-token long-context tiers where a provider has them, and fast-variant multipliers. When one request's prompt passes 200k tokens, the higher rate applies to the whole request. Cursor's export combines many requests into each row, so OpenUsage uses the normal rate there rather than guessing that one request crossed the limit. When a Claude log line carries an explicit `costUSD`, that value is used as-is. The result is an estimate of API-rate value, not a bill: subscription plans don't charge per token.
+Costs are computed per usage event from four token buckets — plain input, cache writes, cache reads, and output — at the model's per-million-token rates, including 1-hour cache-write pricing, model-specific long-context tiers, and fast-variant multipliers. A long-context tier may begin above 200K or another model-defined prompt size; for example, current GPT-5.4, GPT-5.5, and GPT-5.6 requests above 272K input tokens use the higher rates for the full request. Output tokens use the selected tier but do not trigger it by themselves. Cursor's export combines many requests into each row, so OpenUsage uses the normal rate there rather than guessing that one request crossed the limit. When a Claude log line carries an explicit `costUSD`, that value is used as-is. The result is an estimate of API-rate value, not a bill: subscription plans don't charge per token.
 
 ## Privacy
 
@@ -30,5 +30,5 @@ The pricing refresh fetches three public price lists (from `raw.githubuserconten
 
 ## Maintainer notes
 
-- **Supplement changes** (new Cursor-native model, price correction, new alias): edit `Sources/OpenUsage/Resources/pricing_supplement.json`, sync entries from [Cursor models & pricing](https://cursor.com/docs/models-and-pricing.md), and update `updated_at`. On merge to `main`, `.github/workflows/pricing-supplement.yml` publishes it to gh-pages; installed apps pick it up within about an hour. The bundled copy ships with the next release for first launches. The **pricing-update skill** (`.agents/skills/pricing-update/`) walks an agent through the whole sync: pull the Cursor page, diff, edit, validate, and open a PR.
+- **Supplement changes** (new model or tier, price correction, new alias): edit `Sources/OpenUsage/Resources/pricing_supplement.json`, verify the authoritative provider source, and update `updated_at`. Cursor-native entries come from [Cursor models & pricing](https://cursor.com/docs/models-and-pricing.md); OpenAI entries come from its official model pages. On merge to `main`, `.github/workflows/pricing-supplement.yml` publishes it to gh-pages; installed apps pick it up within about an hour. The bundled copy ships with the next release for first launches. The **pricing-update skill** (`.agents/skills/pricing-update/`) walks an agent through the Cursor sync.
 - **Bundled snapshots** (`pricing_litellm_snapshot.json`, `pricing_models_dev_snapshot.json`): regenerate occasionally (e.g. before a release) with `script/update_pricing_snapshots.sh`. Staleness is harmless — runtime fetches override them.

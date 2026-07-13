@@ -1,16 +1,42 @@
 import XCTest
 @testable import OpenUsage
 
-/// End-to-end provider behavior: detection via the Go auth key or local usage, and a refresh that yields
-/// the Go meters + combined spend tiles + trend, plus the not-logged-in path.
+/// End-to-end provider behavior: detection via any OpenCode auth or local usage, and a refresh that
+/// yields Go-only meters plus all-provider spend tiles and trend.
 @MainActor
 final class OpenCodeProviderTests: XCTestCase {
     private func d(_ iso: String) -> Date { OpenUsageISO8601.date(from: iso)! }
     private func epochMs(_ iso: String) -> Int { Int(d(iso).timeIntervalSince1970 * 1000) }
-    private func row(_ iso: String, _ cost: String, _ tokens: Int, _ model: String, _ provider: String) -> String {
-        "[\(epochMs(iso)),\(cost),\(tokens),\"\(model)\",\"\(provider)\"]"
+    private func row(
+        _ iso: String,
+        _ cost: String,
+        _ tokens: Int,
+        _ model: String,
+        _ provider: String,
+        input: Int? = nil,
+        cacheRead: Int = 0,
+        output: Int = 0,
+        reasoning: Int = 0
+    ) -> String {
+        "[\(epochMs(iso)),\(cost),\(tokens),\"\(model)\",\"\(provider)\",\(input ?? tokens),\(cacheRead),0,\(output),\(reasoning),\"\(provider)-\(model)-\(epochMs(iso))\",1]"
     }
     private let authJSON = #"{"opencode-go":{"type":"api","key":"sk-test"}}"#
+    private let openAIAuthJSON = #"{"openai":{"type":"oauth","access":"secret","refresh":"secret"}}"#
+
+    private var testPricing: ModelPricing {
+        ModelPricing(
+            supplement: PricingSupplement(),
+            primary: PricingCatalog(entries: [
+                "gpt-test": ModelRates(
+                    inputPerMillion: 2,
+                    outputPerMillion: 10,
+                    cacheWritePerMillion: 2,
+                    cacheReadPerMillion: 0.2
+                )
+            ]),
+            secondary: PricingCatalog()
+        )
+    }
 
     private func authStore(files: TextFileAccessing) -> OpenCodeAuthStore {
         OpenCodeAuthStore(
@@ -23,6 +49,15 @@ final class OpenCodeProviderTests: XCTestCase {
     func testHasLocalCredentialsViaGoAuthKey() async {
         let provider = OpenCodeProvider(
             authStore: authStore(files: FakeFiles(["/oc/auth.json": authJSON])),
+            usageScanner: OpenCodeUsageScanner(sqlite: StubSQLite(), databasePaths: { [] })
+        )
+        let has = await provider.hasLocalCredentials()
+        XCTAssertTrue(has)
+    }
+
+    func testHasLocalCredentialsViaExternalAuth() async {
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles(["/oc/auth.json": openAIAuthJSON])),
             usageScanner: OpenCodeUsageScanner(sqlite: StubSQLite(), databasePaths: { [] })
         )
         let has = await provider.hasLocalCredentials()
@@ -66,7 +101,8 @@ final class OpenCodeProviderTests: XCTestCase {
                 sqlite: StubSQLite(data: ["/oc/opencode.db": db]),
                 databasePaths: { ["/oc/opencode.db"] }
             ),
-            now: { now }
+            now: { now },
+            pricing: { .empty }
         )
         let snapshot = await provider.refresh()
         XCTAssertEqual(snapshot.plan, "Go")
@@ -83,7 +119,8 @@ final class OpenCodeProviderTests: XCTestCase {
         let provider = OpenCodeProvider(
             authStore: authStore(files: FakeFiles()),
             usageScanner: OpenCodeUsageScanner(sqlite: StubSQLite(), databasePaths: { [] }),
-            now: { now }
+            now: { now },
+            pricing: { .empty }
         )
         let snapshot = await provider.refresh()
         XCTAssertEqual(snapshot.errorCategory, .notLoggedIn)
@@ -110,6 +147,21 @@ final class OpenCodeProviderTests: XCTestCase {
         XCTAssertNotNil(snapshot.line(label: "Monthly"))
     }
 
+    func testRefreshExternalAuthWithoutDatabaseShowsNoDataNotLoginError() async {
+        let now = d("2026-07-12T12:00:00.000Z")
+        let pricing = testPricing
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles(["/oc/auth.json": openAIAuthJSON])),
+            usageScanner: OpenCodeUsageScanner(sqlite: StubSQLite(), databasePaths: { [] }),
+            now: { now },
+            pricing: { pricing }
+        )
+        let snapshot = await provider.refresh()
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertNil(snapshot.plan)
+        XCTAssertEqual(snapshot.line(label: "Status"), .noUsageData)
+    }
+
     func testRefreshErrorsWhenAllDatabasesUnreadable() async {
         // A valid Go key with a locked/corrupt database must surface a read error, not $0 meters.
         let now = d("2026-07-12T12:00:00.000Z")
@@ -124,6 +176,26 @@ final class OpenCodeProviderTests: XCTestCase {
         let snapshot = await provider.refresh()
         XCTAssertEqual(snapshot.errorCategory, .credentialAccess)
         XCTAssertNil(snapshot.line(label: "Session"))
+    }
+
+    func testRefreshSurfacesInvalidHostedCostAsSoftWarning() async {
+        let now = d("2026-07-12T12:00:00.000Z")
+        let db = "[" + row("2026-07-12T10:00:00.000Z", "null", 100, "glm", "opencode-go") + "]"
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles(["/oc/auth.json": authJSON])),
+            usageScanner: OpenCodeUsageScanner(
+                sqlite: StubSQLite(data: ["/oc/opencode.db": db]),
+                databasePaths: { ["/oc/opencode.db"] }
+            ),
+            now: { now },
+            pricing: { .empty }
+        )
+
+        let snapshot = await provider.refresh()
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertNotNil(snapshot.warning)
+        XCTAssertNil(snapshot.line(label: "Session"))
+        XCTAssertNil(snapshot.line(label: "Today"))
     }
 
     func testRefreshSurfacesUnreadableAuthFileInsteadOfNotLoggedIn() async {
@@ -149,8 +221,9 @@ final class OpenCodeProviderTests: XCTestCase {
         XCTAssertTrue(has)
     }
 
-    func testSpendTilesAreNotMarkedEstimated() async {
-        // OpenCode records its own per-message cost — the tiles must not carry the local-estimate ⓘ.
+    func testSpendTilesMarkOpenCodeAPIRateValuesEstimated() async {
+        // OpenCode derives per-message cost from model metadata, so it is an API-rate estimate rather
+        // than a provider bill — including for Go/Zen rows where the database already has a value.
         let now = d("2026-07-12T12:00:00.000Z")
         let db = "[" + row("2026-07-12T10:00:00.000Z", "1.0", 500, "gpt-5.5", "opencode") + "]"
         let provider = OpenCodeProvider(
@@ -159,13 +232,68 @@ final class OpenCodeProviderTests: XCTestCase {
                 sqlite: StubSQLite(data: ["/oc/opencode.db": db]),
                 databasePaths: { ["/oc/opencode.db"] }
             ),
-            now: { now }
+            now: { now },
+            pricing: { .empty }
         )
         let snapshot = await provider.refresh()
         guard case .values(_, let values, _, _, _, _)? = snapshot.line(label: "Today") else {
             return XCTFail("expected a Today tile")
         }
-        XCTAssertFalse(values.contains(where: \.estimated))
+        XCTAssertTrue(values.contains(where: \.estimated))
+    }
+
+    func testExternalOAuthUsageIsEstimatedWithoutGoMeters() async {
+        let now = d("2026-07-12T12:00:00.000Z")
+        let pricing = testPricing
+        let db = "[" + row(
+            "2026-07-12T10:00:00.000Z", "0", 150, "gpt-test", "openai",
+            input: 100, cacheRead: 20, output: 20, reasoning: 10
+        ) + "]"
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles(["/oc/auth.json": openAIAuthJSON])),
+            usageScanner: OpenCodeUsageScanner(
+                sqlite: StubSQLite(data: ["/oc/opencode.db": db]),
+                databasePaths: { ["/oc/opencode.db"] }
+            ),
+            now: { now },
+            pricing: { pricing }
+        )
+
+        let snapshot = await provider.refresh()
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertNil(snapshot.plan)
+        XCTAssertNil(snapshot.line(label: "Session"))
+        XCTAssertNotNil(snapshot.line(label: "Usage Trend"))
+        guard case .values(_, let values, _, _, _, let breakdown)? = snapshot.line(label: "Today") else {
+            return XCTFail("expected a Today tile")
+        }
+        XCTAssertTrue(values.contains(where: \.estimated))
+        XCTAssertEqual(breakdown?.models.first?.model, "openai/gpt-test")
+    }
+
+    func testUnknownExternalModelIsExcludedFromDisplayedTotals() async {
+        let now = d("2026-07-12T12:00:00.000Z")
+        let db = "[" + [
+            row("2026-07-12T10:00:00.000Z", "1", 500, "known", "opencode"),
+            row("2026-07-12T09:00:00.000Z", "0", 321, "private", "openai")
+        ].joined(separator: ",") + "]"
+        let provider = OpenCodeProvider(
+            authStore: authStore(files: FakeFiles(["/oc/auth.json": openAIAuthJSON])),
+            usageScanner: OpenCodeUsageScanner(
+                sqlite: StubSQLite(data: ["/oc/opencode.db": db]),
+                databasePaths: { ["/oc/opencode.db"] }
+            ),
+            now: { now },
+            pricing: { .empty }
+        )
+
+        let snapshot = await provider.refresh()
+        guard case .values(_, let values, _, _, let unknownModels, _)? = snapshot.line(label: "Today") else {
+            return XCTFail("expected a Today tile")
+        }
+        XCTAssertEqual(values.first(where: { $0.kind == .dollars })?.number, 1)
+        XCTAssertEqual(values.first(where: { $0.kind == .count })?.number, 500)
+        XCTAssertEqual(unknownModels, ["openai/private"])
     }
 
     func testStaleGoHistoryDoesNotShowGoPlanOrMeters() async {

@@ -1,7 +1,9 @@
 # OpenCode
 
-Tracks your OpenCode-hosted usage — the **Go** subscription and the **Zen** pay-as-you-go gateway — from
-OpenCode's own logs already on your Mac. Nothing is sent anywhere.
+Tracks every model you use through OpenCode — including **ChatGPT OAuth**, Hugging Face, other external
+providers, the **Go** subscription, and the **Zen** pay-as-you-go gateway — from OpenCode's own logs already
+on your Mac. Raw logs and credentials stay local; normalized history syncs through your private iCloud
+container only when you enable Sync Across Macs.
 
 ## What it tracks
 
@@ -10,7 +12,7 @@ OpenCode's own logs already on your Mac. Nothing is sent anywhere.
 | Session | Go spend in the rolling 5-hour window, against the $12 cap, with the reset countdown |
 | Weekly | Go spend this week, against the $30 cap (resets Monday) |
 | Monthly | Go spend this cycle, against the $60 cap |
-| Today / Yesterday / Last 30 Days | Local cost and tokens across all your OpenCode-hosted usage (Go + Zen) |
+| Today / Yesterday / Last 30 Days | Local tokens with a recorded or estimated API-rate cost across every provider used through OpenCode |
 | Usage Trend | A day-by-day sparkline of tokens over the last month |
 
 When you have the Go subscription, OpenUsage shows "Go" beside the provider name.
@@ -24,17 +26,26 @@ hidden and you'll just see the spend tiles.
 
 ## Where credentials come from
 
-Use OpenCode as usual. OpenUsage reads OpenCode's local data directory
+Use OpenCode as usual and sign in to whichever providers you want there. OpenUsage reads OpenCode's local data directory
 (`~/.local/share/opencode`, or `$OPENCODE_DATA_DIR` / `$XDG_DATA_HOME` if you've set them): the
-`auth.json` Go key to detect that you use it, and the local SQLite logs for the numbers. There's no login
-prompt and no token to paste.
+non-secret presence of provider logins in `auth.json`, the Go key when present, and the local SQLite logs
+for the numbers. External credentials are never returned, logged, or sent anywhere. There's no OpenUsage
+login prompt and no token to paste.
 
 ## The meters and spend tiles
 
-The dollar figures come straight from the per-message cost OpenCode records for its own hosted gateways, so
-they're OpenCode's own accounting — not an estimate imputed from token counts. Each spend tile shows cost
-and tokens together (`$4.08 · 1.2M tokens`), the same as Claude / Codex / Cursor. A period with no recorded
-usage reads "No data" rather than a misleading `$0.00`. No log data leaves your Mac.
+Tokens come straight from OpenCode's completed assistant messages. OpenCode derives positive costs
+from model metadata, so OpenUsage keeps those API-rate values and marks them estimated. Some
+subscription-backed logins such as ChatGPT OAuth record `$0` even though they carry full token counts;
+OpenUsage prices those buckets through the same shared catalog as Codex. This is an **API-rate value**, not
+money charged on top of your subscription. Because each completed OpenCode message preserves its token
+buckets, model-specific long-context pricing can be applied per request. OpenCode-specific model aliases
+and provider spellings are normalized before catalog lookup. When a model has no known rate, its usage is excluded from the
+token and dollar totals and the warning triangle names it, rather than showing mismatched figures.
+
+Each spend tile shows cost and the corresponding priced tokens together (`$4.08 · 1.2M tokens`). A period
+where nothing can be priced reads "No data".
+No log data leaves your Mac.
 
 The Go caps OpenUsage draws against are the published plan limits: **$12 per rolling 5 hours**, **$30 per
 week** (UTC Monday), and **$60 per month** (the monthly cycle is anchored to the day of the month you first
@@ -52,14 +63,18 @@ used Go). Zen usage is pay-as-you-go credits with no cap, so it appears only in 
   read this refresh. Quit OpenCode and refresh; if it persists, check the permissions on
   `~/.local/share/opencode`.
 - **"Couldn't read OpenCode's auth.json"** — the file exists but is unreadable or not valid JSON. Check
-  its permissions, or log into OpenCode Go again to rewrite it.
+  its permissions, or log into a provider in OpenCode again to rewrite it.
+- **An invalid-cost warning appears** — one or more completed Go or Zen records have malformed cost data.
+  Affected usage and Go meters stay hidden rather than appearing artificially low.
+- **A dollar value has an estimate marker** — it is an API-rate value derived by OpenCode or OpenUsage,
+  not an amount read from your provider bill.
 - **Numbers look lower than your dashboard** — the meters are local-observed spend (this Mac only); see the
   note above.
 
 ## Under the hood
 
-OpenUsage reads the assistant-message `cost` and token fields from every `opencode*.db` in the data
+OpenUsage reads the assistant-message provider, model, `cost`, and token-bucket fields from every `opencode*.db` in the data
 directory (OpenCode partitions its database by release channel — stable is `opencode.db`, the preview line
-is `opencode-next.db` — so all channels are unioned). The Go caps sum the `opencode-go` messages; the spend
-tiles and trend sum both `opencode-go` (Go) and `opencode` (Zen). Read-only, no network. If OpenCode's
+is `opencode-next.db` — so all channels are unioned and duplicate message IDs count once). The Go caps sum
+only `opencode-go` messages; the spend tiles and trend sum every provider ID. Read-only, no network. If OpenCode's
 proposed `/zen/go/v1/usage` API ships, the same Go key becomes the bearer token for authoritative windows.

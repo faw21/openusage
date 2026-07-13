@@ -81,6 +81,7 @@ enum UsageHistoryAggregator {
         var tokens = 0
         var cost: Double?
         var sawCost = false
+        var sawUnpriced = false
         var variants: [String: VariantAccumulator] = [:]
 
         mutating func add(_ model: ModelUsageEntry) {
@@ -89,6 +90,8 @@ enum UsageHistoryAggregator {
             if let value = model.costUSD {
                 cost = (cost ?? 0) + value
                 sawCost = true
+            } else if model.totalTokens > 0 {
+                sawUnpriced = true
             }
             for variant in model.variants ?? [] {
                 variants[variant.model.lowercased(), default: VariantAccumulator(name: variant.model)]
@@ -102,7 +105,7 @@ enum UsageHistoryAggregator {
             return ModelUsageEntry(
                 model: displayName,
                 totalTokens: tokens,
-                costUSD: sawCost ? cost : nil,
+                costUSD: sawCost && !sawUnpriced ? cost : nil,
                 variants: mergedVariants.isEmpty ? nil : mergedVariants
             )
         }
@@ -113,17 +116,20 @@ enum UsageHistoryAggregator {
         var tokens = 0
         var cost: Double?
         var sawCost = false
+        var sawUnpriced = false
 
         mutating func add(_ variant: ModelUsageVariant) {
             tokens += variant.totalTokens
             if let value = variant.costUSD {
                 cost = (cost ?? 0) + value
                 sawCost = true
+            } else if variant.totalTokens > 0 {
+                sawUnpriced = true
             }
         }
 
         var entry: ModelUsageVariant {
-            ModelUsageVariant(model: name, totalTokens: tokens, costUSD: sawCost ? cost : nil)
+            ModelUsageVariant(model: name, totalTokens: tokens, costUSD: sawCost && !sawUnpriced ? cost : nil)
         }
     }
 }

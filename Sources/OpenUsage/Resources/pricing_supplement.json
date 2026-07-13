@@ -1,5 +1,5 @@
 {
-  "$comment": "OpenUsage pricing supplement. Prices Cursor-native models that no public catalog carries, supplies fast-variant multipliers the catalogs omit, and maps provider log/CSV model slugs to canonical pricing keys (LiteLLM keys, models.dev ids, or entries in this file). Published to gh-pages by .github/workflows/pricing-supplement.yml on every change, so installed apps pick edits up within about an hour - no release needed. Rates are USD per million tokens. Sources: https://cursor.com/docs/models-and-pricing.md for Cursor-native entries.",
+  "$comment": "OpenUsage pricing supplement. Prices models or tiers that public catalogs do not yet carry, supplies fast-variant multipliers the catalogs omit, and maps provider log/CSV model slugs to canonical pricing keys (LiteLLM keys, models.dev ids, or entries in this file). Published to gh-pages by .github/workflows/pricing-supplement.yml on every change, so installed apps pick edits up within about an hour - no release needed. Rates are USD per million tokens. Sources: https://cursor.com/docs/models-and-pricing.md for Cursor-native entries and https://developers.openai.com/api/docs/models for current OpenAI model rates and long-context rules.",
   "updated_at": "2026-07-13",
   "pricing": {
     "auto": {
@@ -91,24 +91,77 @@
       "cache_read_per_million": 0.6,
       "output_per_million": 22.5
     },
+    "gpt-5.4": {
+      "$comment": "OpenAI standard pricing. Prompts above 272K input tokens price the full request at 2x input and 1.5x output.",
+      "input_per_million": 2.5,
+      "cache_write_per_million": 2.5,
+      "cache_read_per_million": 0.25,
+      "output_per_million": 15.0,
+      "long_context_threshold_tokens": 272000,
+      "input_long_context_per_million": 5.0,
+      "cache_write_long_context_per_million": 5.0,
+      "cache_read_long_context_per_million": 0.5,
+      "output_long_context_per_million": 22.5
+    },
+    "gpt-5.4-pro": {
+      "$comment": "OpenAI standard pricing. Prompts above 272K input tokens price the full request at 2x input and 1.5x output; Pro has no cached-input discount.",
+      "input_per_million": 30.0,
+      "cache_write_per_million": 30.0,
+      "cache_read_per_million": 30.0,
+      "output_per_million": 180.0,
+      "long_context_threshold_tokens": 272000,
+      "input_long_context_per_million": 60.0,
+      "cache_write_long_context_per_million": 60.0,
+      "cache_read_long_context_per_million": 60.0,
+      "output_long_context_per_million": 270.0
+    },
+    "gpt-5.5": {
+      "$comment": "OpenAI standard pricing. Prompts above 272K input tokens price the full request at 2x input and 1.5x output.",
+      "input_per_million": 5.0,
+      "cache_write_per_million": 5.0,
+      "cache_read_per_million": 0.5,
+      "output_per_million": 30.0,
+      "long_context_threshold_tokens": 272000,
+      "input_long_context_per_million": 10.0,
+      "cache_write_long_context_per_million": 10.0,
+      "cache_read_long_context_per_million": 1.0,
+      "output_long_context_per_million": 45.0
+    },
     "gpt-5.6-sol": {
-      "$comment": "OpenAI's GPT-5.6 preview pricing. Its public catalogs have not added these models yet.",
+      "$comment": "OpenAI standard pricing. Prompts above 272K input tokens price the full request at 2x input and 1.5x output; cache writes are 1.25x uncached input.",
       "input_per_million": 5.0,
       "cache_write_per_million": 6.25,
       "cache_read_per_million": 0.5,
-      "output_per_million": 30.0
+      "output_per_million": 30.0,
+      "long_context_threshold_tokens": 272000,
+      "input_long_context_per_million": 10.0,
+      "cache_write_long_context_per_million": 12.5,
+      "cache_read_long_context_per_million": 1.0,
+      "output_long_context_per_million": 45.0
     },
     "gpt-5.6-terra": {
+      "$comment": "OpenAI standard pricing. Prompts above 272K input tokens price the full request at 2x input and 1.5x output; cache writes are 1.25x uncached input.",
       "input_per_million": 2.5,
       "cache_write_per_million": 3.125,
       "cache_read_per_million": 0.25,
-      "output_per_million": 15.0
+      "output_per_million": 15.0,
+      "long_context_threshold_tokens": 272000,
+      "input_long_context_per_million": 5.0,
+      "cache_write_long_context_per_million": 6.25,
+      "cache_read_long_context_per_million": 0.5,
+      "output_long_context_per_million": 22.5
     },
     "gpt-5.6-luna": {
+      "$comment": "OpenAI standard pricing. Prompts above 272K input tokens price the full request at 2x input and 1.5x output; cache writes are 1.25x uncached input.",
       "input_per_million": 1.0,
       "cache_write_per_million": 1.25,
       "cache_read_per_million": 0.1,
-      "output_per_million": 6.0
+      "output_per_million": 6.0,
+      "long_context_threshold_tokens": 272000,
+      "input_long_context_per_million": 2.0,
+      "cache_write_long_context_per_million": 2.5,
+      "cache_read_long_context_per_million": 0.2,
+      "output_long_context_per_million": 9.0
     }
   },
   "fast_multipliers": {
@@ -188,10 +241,14 @@
     { "pattern": "^gpt-5\\.3-codex(?:-(?:low|high|xhigh))?$", "canonical": "gpt-5.3-codex" },
     { "pattern": "^gpt-5\\.4-mini(?:-(?:none|low|medium|high|xhigh))?$", "canonical": "gpt-5.4-mini" },
     { "pattern": "^gpt-5\\.4-nano(?:-(?:none|low|medium|high|xhigh))?$", "canonical": "gpt-5.4-nano" },
+    { "pattern": "^gpt-5\\.4-2026-03-05$", "canonical": "gpt-5.4" },
+    { "pattern": "^gpt-5\\.4-pro-2026-03-05$", "canonical": "gpt-5.4-pro" },
     { "pattern": "^gpt-5\\.4-(?:low|medium|high|xhigh)-fast$", "canonical": "gpt-5.4-fast" },
     { "pattern": "^gpt-5\\.4-(?:low|medium|high|xhigh)$", "canonical": "gpt-5.4" },
+    { "pattern": "^gpt-5\\.5-2026-04-23$", "canonical": "gpt-5.5" },
     { "pattern": "^gpt-5\\.5(?:-(?:low|medium|high|xhigh|extra-high))?-fast$", "canonical": "gpt-5.5-fast" },
     { "pattern": "^gpt-5\\.5(?:-(?:low|medium|high|xhigh|extra-high))?$", "canonical": "gpt-5.5" },
+    { "pattern": "^gpt-5\\.6$", "canonical": "gpt-5.6-sol" },
     { "pattern": "^gpt-5\\.6-sol(?:-(?:none|low|medium|high|xhigh|max|ultra))?-fast$", "canonical": "gpt-5.6-sol-fast" },
     { "pattern": "^gpt-5\\.6-sol(?:-(?:none|low|medium|high|xhigh|max|ultra))?$", "canonical": "gpt-5.6-sol" },
     { "pattern": "^gpt-5\\.6-terra(?:-(?:none|low|medium|high|xhigh|max))?-fast$", "canonical": "gpt-5.6-terra-fast" },

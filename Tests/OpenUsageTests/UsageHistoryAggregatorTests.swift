@@ -91,6 +91,37 @@ final class UsageHistoryAggregatorTests: XCTestCase {
         XCTAssertEqual(claude.unknownModelsByDay, ["2026-07-13": ["current-unknown"]])
     }
 
+    func testAggregationDoesNotShowPartialModelCostAcrossMachines() throws {
+        let local = ProviderSnapshot(
+            providerID: "opencode",
+            displayName: "OpenCode",
+            lines: [],
+            usageHistory: history(tokens: 100, cost: 1, model: "openai/mixed")
+        )
+        let peer = document(
+            deviceID: "peer",
+            updatedAt: 100,
+            providers: ["opencode": history(tokens: 200, cost: nil, model: "openai/mixed")]
+        )
+
+        let merged = UsageHistoryAggregator.merged(
+            localSnapshots: ["opencode": local],
+            peerDocuments: [peer],
+            descriptors: [
+                "opencode": UsageHistoryDescriptor(
+                    scope: .machineLocal,
+                    estimatedCost: true,
+                    sourceNote: "From OpenCode logs"
+                )
+            ],
+            now: localDay(2026, 7, 13)
+        )
+
+        let model = try XCTUnwrap(merged["opencode"]?.modelUsage?.daily.first?.models.first)
+        XCTAssertEqual(model.totalTokens, 300)
+        XCTAssertNil(model.costUSD, "a peer's unpriced tokens must invalidate the merged model cost")
+    }
+
     func testRendererReplacesOnlySpendRowsAndKeepsLocalState() throws {
         let local = ProviderSnapshot(
             providerID: "claude",

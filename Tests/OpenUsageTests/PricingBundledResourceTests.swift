@@ -108,11 +108,22 @@ final class PricingBundledResourceTests: XCTestCase {
         XCTAssertEqual(sol.cacheWritePerMillion, 6.25)
         XCTAssertEqual(sol.cacheReadPerMillion, 0.5)
         XCTAssertEqual(sol.outputPerMillion, 30.0)
+        XCTAssertEqual(sol.longContextThresholdTokens, 272_000)
+        XCTAssertEqual(sol.inputAbove200kPerMillion, 10.0)
+        XCTAssertEqual(sol.cacheWriteAbove200kPerMillion, 12.5)
+        XCTAssertEqual(sol.cacheReadAbove200kPerMillion, 1.0)
+        XCTAssertEqual(sol.outputAbove200kPerMillion, 45.0)
+        XCTAssertEqual(pricing.resolve(model: "gpt-5.6"), sol)
         let solFast = try XCTUnwrap(pricing.resolve(model: "gpt-5.6-sol-ultra-fast"))
         XCTAssertEqual(solFast.inputPerMillion, 12.5)
         XCTAssertEqual(solFast.cacheWritePerMillion, 15.625)
         XCTAssertEqual(solFast.cacheReadPerMillion, 1.25)
         XCTAssertEqual(solFast.outputPerMillion, 75.0)
+        XCTAssertEqual(solFast.longContextThresholdTokens, 272_000)
+        XCTAssertEqual(solFast.inputAbove200kPerMillion, 25.0)
+        XCTAssertEqual(solFast.cacheWriteAbove200kPerMillion, 31.25)
+        XCTAssertEqual(solFast.cacheReadAbove200kPerMillion, 2.5)
+        XCTAssertEqual(solFast.outputAbove200kPerMillion, 112.5)
 
         let terra = try XCTUnwrap(pricing.resolve(model: "gpt-5.6-terra-high"))
         XCTAssertEqual(terra.inputPerMillion, 2.5)
@@ -135,6 +146,33 @@ final class PricingBundledResourceTests: XCTestCase {
         XCTAssertEqual(lunaFast.cacheWritePerMillion, 3.125)
         XCTAssertEqual(lunaFast.cacheReadPerMillion, 0.25)
         XCTAssertEqual(lunaFast.outputPerMillion, 15.0)
+
+        let realOpenCodeRequest = TokenBreakdown(input: 330_335, output: 671 + 196)
+        XCTAssertEqual(
+            pricing.estimatedCostDollars(model: "gpt-5.6-sol", tokens: realOpenCodeRequest)!,
+            3.342365,
+            accuracy: 0.0000001
+        )
+    }
+
+    func testOpenAILongContextPricingAndDatedAliases() throws {
+        let pricing = Self.pricing
+        let gpt54 = try XCTUnwrap(pricing.resolve(model: "gpt-5.4-2026-03-05"))
+        XCTAssertEqual(gpt54.longContextThresholdTokens, 272_000)
+        XCTAssertEqual(gpt54.inputAbove200kPerMillion, 5)
+        XCTAssertEqual(gpt54.outputAbove200kPerMillion, 22.5)
+
+        let gpt54Pro = try XCTUnwrap(pricing.resolve(model: "gpt-5.4-pro-2026-03-05"))
+        XCTAssertEqual(gpt54Pro.longContextThresholdTokens, 272_000)
+        XCTAssertEqual(gpt54Pro.inputAbove200kPerMillion, 60)
+        XCTAssertEqual(gpt54Pro.cacheReadAbove200kPerMillion, 60)
+        XCTAssertEqual(gpt54Pro.outputAbove200kPerMillion, 270)
+
+        let gpt55 = try XCTUnwrap(pricing.resolve(model: "gpt-5.5-2026-04-23"))
+        XCTAssertEqual(gpt55.longContextThresholdTokens, 272_000)
+        XCTAssertEqual(gpt55.inputAbove200kPerMillion, 10)
+        XCTAssertEqual(gpt55.cacheReadAbove200kPerMillion, 1)
+        XCTAssertEqual(gpt55.outputAbove200kPerMillion, 45)
     }
 
     /// Opus 4.7/4.8 fast modes: Cursor's published rates (supplement overrides) win over the

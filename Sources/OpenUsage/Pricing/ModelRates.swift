@@ -10,8 +10,13 @@ struct ModelRates: Sendable, Equatable {
     var cacheWritePerMillion: Double
     var cacheReadPerMillion: Double
 
-    /// Rates for requests whose prompt exceeds 200k tokens, where the provider prices the whole
-    /// request at the higher long-context tier.
+    /// Prompt-token boundary for the optional whole-request long-context tier. LiteLLM's tiered
+    /// fields use 200k by default; some providers publish a model-specific boundary instead.
+    var longContextThresholdTokens: Int = 200_000
+
+    /// Rates for requests whose prompt exceeds `longContextThresholdTokens`, where the provider
+    /// prices the whole request at the higher long-context tier. The property names retain their
+    /// LiteLLM terminology because that feed calls these its `above_200k` fields.
     var inputAbove200kPerMillion: Double?
     var outputAbove200kPerMillion: Double?
     var cacheWriteAbove200kPerMillion: Double?
@@ -28,6 +33,7 @@ struct ModelRates: Sendable, Equatable {
             outputPerMillion: outputPerMillion * factor,
             cacheWritePerMillion: cacheWritePerMillion * factor,
             cacheReadPerMillion: cacheReadPerMillion * factor,
+            longContextThresholdTokens: longContextThresholdTokens,
             inputAbove200kPerMillion: inputAbove200kPerMillion.map { $0 * factor },
             outputAbove200kPerMillion: outputAbove200kPerMillion.map { $0 * factor },
             cacheWriteAbove200kPerMillion: cacheWriteAbove200kPerMillion.map { $0 * factor },
@@ -61,11 +67,11 @@ extension ModelRates {
     /// explicit `above_1hr` fields where present).
     private static let cacheWrite1hInputMultiplier = 2.0
 
-    /// Dollar cost of one request at these rates, applying the request-wide >200k tier and the fast
-    /// multiplier. Aggregated sources can opt out when their totals do not preserve request boundaries.
+    /// Dollar cost of one request at these rates, applying its request-wide long-context tier and the
+    /// fast multiplier. Aggregated sources can opt out when their totals do not preserve request boundaries.
     func costDollars(for tokens: TokenBreakdown, applyLongContextRates: Bool = true) -> Double {
         let multiplier = tokens.isFast ? fastMultiplier : 1
-        let useLongContextRates = applyLongContextRates && tokens.promptTokens > 200_000
+        let useLongContextRates = applyLongContextRates && tokens.promptTokens > longContextThresholdTokens
         let inputRate = selectedRate(base: inputPerMillion, longContext: inputAbove200kPerMillion,
                                      useLongContextRates: useLongContextRates)
         let outputRate = selectedRate(base: outputPerMillion, longContext: outputAbove200kPerMillion,

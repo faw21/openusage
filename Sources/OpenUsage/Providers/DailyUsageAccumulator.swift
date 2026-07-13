@@ -1,15 +1,14 @@
 import Foundation
 
 /// Accumulates priced per-day usage — tokens, cost, and the per-model breakdown — then assembles a
-/// `LogUsageScan`. Shared by the log scanners (Claude, Codex, Grok) so the "accumulate then assemble"
-/// tail lives in one place instead of a byte-identical copy per provider; each scanner keeps only its
-/// format-specific parse/pricing loop.
+/// `LogUsageScan`. Shared by the log scanners (Claude, Codex, Grok, OpenCode) so the "accumulate then
+/// assemble" tail lives in one place instead of a byte-identical copy per provider; each scanner keeps
+/// only its format-specific parse/pricing loop.
 ///
 /// Days are keyed by the shared local-calendar `dayKey`, matching `SpendTileMapper`'s Today / Yesterday
 /// lookup — the day-key contract is one function, not five copies (drift here is the class of bug behind
-/// the ccusage false-zero fix). Only priced rows are added (every scanner skips unpriceable rows before
-/// counting), so every counted day carries a real cost; unpriceable models are tracked separately for
-/// the tile's warning triangle.
+/// the ccusage false-zero fix). Only priced rows are added, so every counted day carries a real cost;
+/// unpriceable models are tracked separately for the tile's warning triangle.
 struct DailyUsageAccumulator {
     private var tokensByDay: [String: Int] = [:]
     private var costByDay: [String: Double] = [:]

@@ -104,23 +104,26 @@ actor ModelPricingStore {
     }
 
     private func loadSupplement() -> PricingSupplement {
+        let bundled: PricingSupplement
+        if let data = bundledData("pricing_supplement") {
+            do {
+                bundled = try PricingSupplement.decode(from: data)
+            } catch {
+                AppLog.error("pricing", "bundled pricing_supplement.json unreadable: \(error.localizedDescription)")
+                bundled = PricingSupplement()
+            }
+        } else {
+            AppLog.error("pricing", "bundled pricing_supplement.json missing")
+            bundled = PricingSupplement()
+        }
         if let cached = readCache(.supplement) {
             do {
-                return try PricingSupplement.decode(from: cached)
+                return bundled.merging(try PricingSupplement.decode(from: cached))
             } catch {
                 AppLog.warn("pricing", "cached supplement unreadable, using bundled: \(error.localizedDescription)")
             }
         }
-        guard let bundled = bundledData("pricing_supplement") else {
-            AppLog.error("pricing", "bundled pricing_supplement.json missing")
-            return PricingSupplement()
-        }
-        do {
-            return try PricingSupplement.decode(from: bundled)
-        } catch {
-            AppLog.error("pricing", "bundled pricing_supplement.json unreadable: \(error.localizedDescription)")
-            return PricingSupplement()
-        }
+        return bundled
     }
 
     /// A catalog is the bundled snapshot with the fetched cache merged on top — cached entries win,

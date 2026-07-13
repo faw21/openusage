@@ -30,8 +30,9 @@ enum SpendTileMapper {
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now).map(dayKey(from:))
 
         if let entry = usage.daily.first(where: { dayKey(fromUsageDate: $0.date) == today }), hasUsage(entry) {
+            let unknownModels = sortedModels(unknownModelsByDay[today])
             lines.append(dayUsageLine(label: "Today", entry: entry, estimated: estimated,
-                                      unknownModels: sortedModels(unknownModelsByDay[today]),
+                                      unknownModels: unknownModels,
                                       modelBreakdown: modelBreakdown(
                                         modelUsage,
                                         days: [today],
@@ -41,8 +42,9 @@ enum SpendTileMapper {
                                       )))
         }
         if let entry = usage.daily.first(where: { dayKey(fromUsageDate: $0.date) == yesterday }), hasUsage(entry) {
+            let unknownModels = sortedModels(yesterday.flatMap { unknownModelsByDay[$0] })
             lines.append(dayUsageLine(label: "Yesterday", entry: entry, estimated: estimated,
-                                      unknownModels: sortedModels(yesterday.flatMap { unknownModelsByDay[$0] }),
+                                      unknownModels: unknownModels,
                                       modelBreakdown: modelBreakdown(
                                         modelUsage,
                                         days: Set([yesterday].compactMap { $0 }),
@@ -212,9 +214,10 @@ enum SpendTileMapper {
     private struct ModelAccumulator {
         var tokens = 0
         var costUSD: Double?
+        var sawUnpriced = false
         private var nameVote = SpellingVote()
         /// Keyed by the case-folded slug; the vote inside restores a display spelling.
-        private var variants: [String: (tokens: Int, costUSD: Double?, vote: SpellingVote)] = [:]
+        private var variants: [String: (tokens: Int, costUSD: Double?, sawUnpriced: Bool, vote: SpellingVote)] = [:]
 
         /// The display spelling for this model, elected across every casing that merged into it.
         var displayName: String? { nameVote.best }
@@ -235,6 +238,8 @@ enum SpendTileMapper {
             tokens += entry.totalTokens
             if let cost = entry.costUSD {
                 costUSD = (costUSD ?? 0) + cost
+            } else if entry.totalTokens > 0 {
+                sawUnpriced = true
             }
             mergeVariant(entry.model, tokens: entry.totalTokens, costUSD: entry.costUSD)
         }
@@ -243,15 +248,21 @@ enum SpendTileMapper {
             tokens += entry.totalTokens
             if let cost = entry.costUSD {
                 costUSD = (costUSD ?? 0) + cost
+            } else if entry.totalTokens > 0 {
+                sawUnpriced = true
             }
             nameVote.note(name, weight: entry.totalTokens)
         }
 
         private mutating func mergeVariant(_ model: String, tokens: Int, costUSD: Double?) {
             let key = model.lowercased()
-            var existing = variants[key] ?? (0, nil, SpellingVote())
+            var existing = variants[key] ?? (0, nil, false, SpellingVote())
             existing.tokens += tokens
-            existing.costUSD = costUSD.map { (existing.costUSD ?? 0) + $0 } ?? existing.costUSD
+            if let costUSD {
+                existing.costUSD = (existing.costUSD ?? 0) + costUSD
+            } else if tokens > 0 {
+                existing.sawUnpriced = true
+            }
             existing.vote.note(model, weight: tokens)
             variants[key] = existing
         }
@@ -260,13 +271,14 @@ enum SpendTileMapper {
             let list = variants
                 .map { key, value in
                     ModelUsageVariant(model: value.vote.best ?? key, totalTokens: value.tokens,
-                                      costUSD: value.costUSD.map(SpendTileMapper.roundToCents))
+                                      costUSD: value.sawUnpriced
+                                        ? nil : value.costUSD.map(SpendTileMapper.roundToCents))
                 }
                 .sorted(by: variantSortPrecedes)
             // One variant carrying the row's own name is no breakdown — nil keeps the tooltip on plain figures.
             let isTrivial = list.count == 1 && list[0].model.lowercased() == model.lowercased()
             return ModelUsageEntry(model: model, totalTokens: tokens,
-                                   costUSD: costUSD.map(SpendTileMapper.roundToCents),
+                                   costUSD: sawUnpriced ? nil : costUSD.map(SpendTileMapper.roundToCents),
                                    variants: isTrivial ? nil : list)
         }
     }

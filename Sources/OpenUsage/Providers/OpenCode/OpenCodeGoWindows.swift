@@ -2,7 +2,7 @@ import Foundation
 
 /// The three OpenCode Go plan windows, as observed-local spend against the published caps
 /// ($12 / rolling 5h, $30 / week, $60 / month). Built by `OpenCodeGoWindowMath` from the local
-/// `opencode-go` messages; only the meters read these (the spend tiles use combined hosted spend).
+/// `opencode-go` messages; only the meters read these (the spend tiles use all-provider OpenCode usage).
 struct OpenCodeGoWindows: Sendable, Equatable {
     var sessionSpend: Double
     var sessionResetsAt: Date?

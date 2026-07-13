@@ -14,18 +14,18 @@ enum OpenCodeUsageError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .notLoggedIn:
-            return "OpenCode not detected. Log in with OpenCode Go or use OpenCode locally first."
+            return "OpenCode not detected. Log in with a provider in OpenCode or use OpenCode locally first."
         case .credentialsUnreadable:
-            return "Couldn't read OpenCode's auth.json. Check its file permissions or log into OpenCode Go again."
+            return "Couldn't read OpenCode's auth.json. Check its file permissions or log into OpenCode again."
         case .databaseUnreadable:
             return "Couldn't read OpenCode's local database. Quit OpenCode and refresh, or check the data directory's permissions."
         }
     }
 }
 
-/// Tracks OpenCode-hosted usage (the Go subscription + the Zen pay-as-you-go gateway) from OpenCode's
-/// local SQLite logs. Cookie-free and network-free — see `OpenCodeUsageScanner`. The card shows the Go
-/// plan caps as dollar meters plus honest local spend tiles + a usage trend.
+/// Tracks every model used through OpenCode from its local SQLite logs. Cookie-free and network-free —
+/// see `OpenCodeUsageScanner`. The card shows Go-only plan caps plus all-provider token/spend tiles and
+/// a usage trend; zero-cost external rows are priced through the shared catalog when possible.
 @MainActor
 final class OpenCodeProvider: ProviderRuntime {
     let provider = Provider(
@@ -40,11 +40,10 @@ final class OpenCodeProvider: ProviderRuntime {
     let authStore: OpenCodeAuthStore
     let usageScanner: OpenCodeUsageScanner
     let now: @Sendable () -> Date
+    let pricing: @Sendable () async -> ModelPricing
 
-    /// Names the local source on hover (the dollars can only undercount true account usage — this
-    /// machine only). No "(estimated)": OpenCode records its own per-message cost, so the values are
-    /// measured, not imputed.
-    private let sourceNote = "From your OpenCode logs"
+    /// OpenCode derives per-message costs from model metadata; they are API-rate values, not charges.
+    private let sourceNote = "From your OpenCode logs (API-rate estimate)"
 
     /// Edge-triggers the auth-read-failure log so a persistently unreadable `auth.json` warns once per
     /// run, not once per 5-minute refresh.
@@ -53,16 +52,18 @@ final class OpenCodeProvider: ProviderRuntime {
     init(
         authStore: OpenCodeAuthStore = OpenCodeAuthStore(),
         usageScanner: OpenCodeUsageScanner = OpenCodeUsageScanner(),
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        pricing: @escaping @Sendable () async -> ModelPricing = { await ModelPricingStore.shared.current() }
     ) {
         self.authStore = authStore
         self.usageScanner = usageScanner
         self.now = now
+        self.pricing = pricing
     }
 
     var widgetDescriptors: [WidgetDescriptor] {
         // Go plan caps read from local `opencode-go` spend (Session/Weekly above the fold, Monthly on
-        // demand); the spend tiles + trend below sum combined OpenCode-hosted (Go + Zen) spend.
+        // demand); the spend tiles + trend below sum every provider used through OpenCode.
         [
             .boundedDollars(id: "opencode.session", provider: provider, title: "Session", limit: OpenCodeUsageMapper.sessionCap)
                 .exportingLimit("session", unit: "usd", estimated: true),
@@ -73,23 +74,24 @@ final class OpenCodeProvider: ProviderRuntime {
             .usageTrend(provider: provider)
                 .exportingHistory(
                     scope: .machineLocal,
-                    estimatedCost: false,
+                    estimatedCost: true,
                     sourceNote: sourceNote
                 )
         ] + WidgetDescriptor.spendTiles(provider: provider)
     }
 
     func hasLocalCredentials() async -> Bool {
-        // Same sources as `refresh()`: the local `opencode-go` auth key, or any hosted usage already in
-        // the local database. Local-only, off the main actor. An unreadable auth.json is itself an
+        // Same sources as `refresh()`: any provider login or any usage already in the local database.
+        // Local-only, off the main actor. An unreadable auth.json is itself an
         // OpenCode footprint — enable the provider so `refresh()` can surface the actionable error.
         await loadOffMainActor { [authStore, usageScanner] in
             do {
-                if try authStore.goAPIKey() != nil { return true }
+                let auth = try authStore.loadState()
+                if auth.hasAnyProviderLogin || auth.goAPIKey != nil { return true }
             } catch {
                 return true
             }
-            return usageScanner.hasHostedUsage()
+            return usageScanner.hasUsage()
         }
     }
 
@@ -100,10 +102,10 @@ final class OpenCodeProvider: ProviderRuntime {
 
         // An unreadable auth.json must not kill a refresh that can still read the database (a Zen user
         // stays live), but it stays distinguishable from "not logged in" when nothing else loads.
-        var hasGoKey = false
+        var authState = OpenCodeAuthState(hasAnyProviderLogin: false, goAPIKey: nil)
         var authReadError: OpenCodeUsageError?
         do {
-            hasGoKey = try await loadOffMainActor { [authStore] in try authStore.goAPIKey() != nil }
+            authState = try await loadOffMainActor { [authStore] in try authStore.loadState() }
             loggedAuthReadFailure = false
         } catch let error as OpenCodeUsageError {
             authReadError = error
@@ -117,14 +119,18 @@ final class OpenCodeProvider: ProviderRuntime {
 
         let scan: OpenCodeUsageScan?
         do {
-            scan = try await usageScanner.scan(now: refreshedAt, hasGoKey: hasGoKey)
+            scan = try await usageScanner.scan(
+                now: refreshedAt,
+                hasGoKey: authState.goAPIKey != nil,
+                pricing: await pricing()
+            )
         } catch {
             return ProviderSnapshot.error(provider: provider, error: error)
         }
 
         guard let scan else {
             // No OpenCode database on disk at all.
-            if hasGoKey {
+            if authState.goAPIKey != nil {
                 // Freshly logged into Go, before the first local message: the key alone establishes the
                 // plan, so show the published caps at $0 rather than a bare "No usage data".
                 let windows = OpenCodeGoWindowMath.compute(costs: [], anchorMs: nil, now: refreshedAt)
@@ -132,6 +138,11 @@ final class OpenCodeProvider: ProviderRuntime {
                     provider: provider, plan: "Go",
                     lines: OpenCodeUsageMapper.meterLines(windows), refreshedAt: refreshedAt
                 )
+            }
+            if authState.hasAnyProviderLogin {
+                var lines: [MetricLine] = []
+                MetricLine.appendNoDataIfNeeded(&lines)
+                return ProviderSnapshot.make(provider: provider, plan: nil, lines: lines, refreshedAt: refreshedAt)
             }
             return ProviderSnapshot.error(
                 provider: provider, error: authReadError ?? OpenCodeUsageError.notLoggedIn
@@ -144,7 +155,7 @@ final class OpenCodeProvider: ProviderRuntime {
         }
         SpendTileMapper.appendTokenUsage(
             scan.logScan.series, to: &lines, now: refreshedAt,
-            estimated: false,
+            estimated: true,
             unknownModelsByDay: scan.logScan.unknownModelsByDay,
             modelUsage: scan.logScan.modelUsage,
             modelSourceNote: sourceNote
@@ -164,7 +175,8 @@ final class OpenCodeProvider: ProviderRuntime {
                 series: scan.logScan.series,
                 modelUsage: scan.logScan.modelUsage,
                 unknownModelsByDay: scan.logScan.unknownModelsByDay
-            )
+            ),
+            warning: scan.warning
         )
     }
 }

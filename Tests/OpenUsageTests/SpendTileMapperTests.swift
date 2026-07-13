@@ -305,6 +305,33 @@ final class SpendTileMapperTests: XCTestCase {
         XCTAssertEqual(opus.variants?.map(\.totalTokens), [400, 300])
     }
 
+    func testModelBreakdownDoesNotShowPartialCostAcrossDays() throws {
+        var lines: [MetricLine] = []
+        SpendTileMapper.appendTokenUsage(
+            DailyUsageSeries(daily: [
+                DailyUsageEntry(date: "2026-06-26", totalTokens: 300, costUSD: 3),
+                DailyUsageEntry(date: "2026-06-25", totalTokens: 400, costUSD: nil)
+            ]),
+            to: &lines,
+            now: day(2026, 6, 26),
+            estimated: true,
+            modelUsage: ModelUsageSeries(daily: [
+                DailyModelUsageEntry(date: "2026-06-26", models: [
+                    ModelUsageEntry(model: "mixed", totalTokens: 300, costUSD: 3)
+                ]),
+                DailyModelUsageEntry(date: "2026-06-25", models: [
+                    ModelUsageEntry(model: "mixed", totalTokens: 400, costUSD: nil)
+                ])
+            ]),
+            modelSourceNote: "From test logs"
+        )
+
+        let last30 = try XCTUnwrap(modelBreakdown(lines, "Last 30 Days"))
+        let mixed = try XCTUnwrap(last30.models.first { $0.model == "mixed" })
+        XCTAssertEqual(mixed.totalTokens, 700)
+        XCTAssertNil(mixed.costUSD, "a partial model cost must not represent all 700 tokens")
+    }
+
     // MARK: - Helpers
 
     private func series(_ days: [(String, Int)]) -> DailyUsageSeries {
