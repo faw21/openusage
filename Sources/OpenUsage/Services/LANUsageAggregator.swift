@@ -72,7 +72,8 @@ enum LANUsageAggregator {
 
     private static func shareableLabels(for providerID: String, registry: WidgetRegistry) -> Set<String> {
         Set(registry.descriptors(for: providerID).compactMap { descriptor in
-            descriptor.isSpendTile || descriptor.sample.isChart ? descriptor.metricLabel : nil
+            guard !descriptor.isAccountWideUsage else { return nil }
+            return descriptor.isSpendTile || descriptor.sample.isChart ? descriptor.metricLabel : nil
         })
     }
 

@@ -38,10 +38,13 @@ final class CursorProvider: ProviderRuntime {
             .boundedCount(id: "cursor.requests", provider: provider, title: "Requests", limit: 500,
                           suffix: "requests", periodDurationMs: CursorUsageMapper.billingPeriodMs),
             .dollarBalance(id: "cursor.credits", provider: provider, title: "Credits", valueWord: "left"),
-            .usageTrend(provider: provider)
+            // Cursor's trend and spend tiles come from the account-wide usage CSV export, not a local
+            // log — every Mac on the account sees the same numbers, so nearby-Mac sync must not add them.
+            .usageTrend(provider: provider, accountWide: true)
         ] + WidgetDescriptor.spendTiles(
             provider: provider,
-            valueTooltipNote: WidgetData.cursorUsageHistoryNote
+            valueTooltipNote: WidgetData.cursorUsageHistoryNote,
+            accountWide: true
         )
     }
 

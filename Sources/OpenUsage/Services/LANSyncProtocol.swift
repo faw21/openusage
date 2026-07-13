@@ -242,6 +242,19 @@ actor LANFramedChannel {
     init(connection: NWConnection, timeout: TimeInterval = 15) {
         self.connection = connection
         self.timeout = timeout
+        // Fail fast instead of hanging into the frame timeout: a connection that can't be established
+        // (stale Bonjour endpoint, unreachable peer) parks in `.waiting` and silently retries forever,
+        // so pending send/receive callbacks would never fire and every failure would read as a
+        // generic "didn't respond in time". Cancelling here makes those callbacks return the real error.
+        connection.stateUpdateHandler = { [weak connection] state in
+            switch state {
+            case .waiting(let error), .failed(let error):
+                AppLog.warn(.localAPI, "LAN sync connection unusable: \(error.localizedDescription)")
+                connection?.cancel()
+            default:
+                break
+            }
+        }
         connection.start(queue: queue)
     }
 
@@ -282,9 +295,9 @@ actor LANFramedChannel {
                     return payload
                 }
             }
-            let chunk = try await receiveChunk()
-            guard !chunk.isEmpty else { throw LANSyncProtocol.ProtocolError.connectionClosed }
-            buffer.append(chunk)
+            // An empty chunk is a receive that completed without data (not end-of-stream — that
+            // throws `.connectionClosed` inside `receiveChunk`); loop and keep reading.
+            buffer.append(try await receiveChunk())
         }
     }
 

@@ -99,7 +99,11 @@ extension WidgetDescriptor {
     /// The three local-spend tiles every spend-tracking provider exposes — Today / Yesterday / Last 30
     /// Days — each a combined "cost · tokens" row, backed by `SpendTileMapper`. Ids are
     /// `<provider>.today|yesterday|last30`, so the set is identical across Claude / Codex / Cursor / Grok.
-    static func spendTiles(provider: Provider, valueTooltipNote: String? = nil) -> [WidgetDescriptor] {
+    static func spendTiles(
+        provider: Provider,
+        valueTooltipNote: String? = nil,
+        accountWide: Bool = false
+    ) -> [WidgetDescriptor] {
         let descriptors: [WidgetDescriptor] = [
             .combined(id: "\(provider.id).today", provider: provider, title: "Today", isUsagePeriod: true),
             .combined(id: "\(provider.id).yesterday", provider: provider, title: "Yesterday", isUsagePeriod: true),
@@ -116,7 +120,8 @@ extension WidgetDescriptor {
                 metricLabel: descriptor.metricLabel,
                 sample: sample,
                 pinnable: descriptor.pinnable,
-                isSpendTile: true
+                isSpendTile: true,
+                isAccountWideUsage: accountWide
             )
         }
     }
@@ -150,11 +155,13 @@ extension WidgetDescriptor {
     /// The Usage Trend row: a day-by-day token sparkline backed by a provider `.chart` line. Not
     /// pinnable — the tray can't draw a chart — but otherwise a normal Customize metric (toggle,
     /// reorder, hide). `isChart` tells the dashboard how to render live chart points.
-    static func usageTrend(provider: Provider) -> WidgetDescriptor {
+    static func usageTrend(provider: Provider, accountWide: Bool = false) -> WidgetDescriptor {
         var sample = WidgetData(title: "Usage Trend", icon: provider.icon, kind: .count, used: 0, limit: nil)
         sample.isChart = true
-        return make(id: "\(provider.id).trend", provider: provider, metricLabel: "Usage Trend",
-                    sample: sample, pinnable: false)
+        var descriptor = make(id: "\(provider.id).trend", provider: provider, metricLabel: "Usage Trend",
+                              sample: sample, pinnable: false)
+        descriptor.isAccountWideUsage = accountWide
+        return descriptor
     }
 
     private static func make(

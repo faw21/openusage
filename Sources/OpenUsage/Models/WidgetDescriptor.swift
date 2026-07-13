@@ -14,6 +14,11 @@ struct WidgetDescriptor: Identifiable, Hashable {
     /// The Total Spend card keys on this to decide which providers feed the ring — a title match would
     /// wrongly rope in look-alike rows like OpenRouter's API-spend "Today".
     var isSpendTile: Bool = false
+    /// True for usage metrics sourced from the provider's account (server-side exports like Cursor's
+    /// usage CSV) rather than this machine's local logs. Nearby-Mac sync must never merge these:
+    /// every Mac signed in to the same account reports the identical numbers, so adding them
+    /// double-counts. Machine-local metrics (Claude/Codex/Grok log scans) stay additive.
+    var isAccountWideUsage: Bool = false
 
     /// The metric's single display name.
     var title: String { sample.title }
