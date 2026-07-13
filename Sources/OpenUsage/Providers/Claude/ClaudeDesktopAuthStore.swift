@@ -38,11 +38,18 @@ struct ClaudeDesktopSafeStorageKeyReader: ClaudeDesktopSafeStorageKeyReading {
             let context = LAContext()
             context.interactionNotAllowed = true
             query[kSecUseAuthenticationContext as String] = context
-            // Belt and braces: `interactionNotAllowed` governs LocalAuthentication-protected items,
-            // but a classic login-keychain ACL dialog is not reliably suppressed by it — and this
-            // read can run during launch, where a blocking dialog would freeze startup. This key
-            // makes the item lookup fail fast instead of ever showing UI.
             query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+            // Neither flag above governs the FILE-BASED login keychain: `SecItemCopyMatching_osx`
+            // ignores them and BLOCKS the calling thread behind securityd's ACL dialog queue (this
+            // froze the whole app when a background read raced a pending dialog). The legacy path's
+            // only off switch is the process-wide interaction gate — deprecated, but it is exactly
+            // the documented mechanism for "fail with errSecInteractionNotAllowed instead of UI".
+            // Scoped tightly around this one read and restored immediately; the manual-refresh path
+            // (`allowInteraction: true`) never sets it, so the one-time grant dialog still shows.
+            SecKeychainSetUserInteractionAllowed(false)
+        }
+        defer {
+            if !allowInteraction { SecKeychainSetUserInteractionAllowed(true) }
         }
 
         var result: CFTypeRef?
