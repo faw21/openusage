@@ -20,7 +20,6 @@ final class WidgetMeterStyleTests: XCTestCase {
         XCTAssertEqual(remaining.boundedHeadline, "20% left")
         XCTAssertNil(remaining.boundedSubtitle)
         XCTAssertEqual(remaining.fraction, 0.20, accuracy: 0.0001)
-        XCTAssertEqual(store.menuBarPrimaryText, "20%")
 
         store.meterStyle = .used
         let used = store.data(for: descriptor)
@@ -28,7 +27,6 @@ final class WidgetMeterStyleTests: XCTestCase {
         XCTAssertEqual(used.boundedHeadline, "80% used")
         XCTAssertNil(used.boundedSubtitle)
         XCTAssertEqual(used.fraction, 0.80, accuracy: 0.0001)
-        XCTAssertEqual(store.menuBarPrimaryText, "80%")
     }
 
     func testMeterStyleFlipsBoundedDollarsTile() async {
@@ -112,8 +110,8 @@ final class WidgetMeterStyleTests: XCTestCase {
     }
 
     func testFallbackSampleShowsNoDataRegardlessOfMode() {
-        // No refresh => `data(for:)` returns the descriptor sample flagged `hasData == false`. The tile
-        // (and the Add-Widget gallery) must show the no-data marker, never the sample's placeholder
+        // No refresh => `data(for:)` returns the descriptor template flagged `hasData == false`. The row
+        // and menu bar must show the no-data marker, never the template's placeholder
         // number — and flipping the global meter style can't resurrect a value that isn't there.
         let (store, descriptor) = makeStore(
             format: .percent,
@@ -151,7 +149,9 @@ final class WidgetMeterStyleTests: XCTestCase {
             snapshot: ProviderSnapshot(
                 providerID: provider.id,
                 displayName: provider.displayName,
-                lines: [.text(label: "Today", value: "$42.50 · 12K tokens")]
+                lines: [.values(label: "Today", values: [
+                    MetricValue(number: 42.50, kind: .dollars)
+                ])]
             )
         )
         let isolated = makeUserDefaults("unbounded")
@@ -169,9 +169,9 @@ final class WidgetMeterStyleTests: XCTestCase {
         let used = store.data(for: descriptor)
 
         XCTAssertEqual(remaining.valueText, "$42.50")
-        XCTAssertEqual(remaining.subtitle, "on-device estimate")
+        XCTAssertEqual(remaining.unboundedSubtitle, "on-device estimate")
         XCTAssertEqual(used.valueText, remaining.valueText)
-        XCTAssertEqual(used.subtitle, remaining.subtitle)
+        XCTAssertEqual(used.unboundedSubtitle, remaining.unboundedSubtitle)
         XCTAssertEqual(used.displayedValue, remaining.displayedValue)
     }
 

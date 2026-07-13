@@ -9,15 +9,17 @@ final class AppContainer {
     let registry: WidgetRegistry
     let layout: LayoutStore
     let dataStore: WidgetDataStore
+    /// Opt-in private iCloud document sync for additive machine-local daily history.
+    let iCloudSync: ICloudUsageSyncStore
     /// Single source of truth for which providers the user has turned off. Both stores consult it (via
-    /// injected closures) and the Providers settings tab drives it.
+    /// injected closures) and the Customize provider list drives it.
     let enablement: ProviderEnablementStore
-    /// Providers that need a user-supplied API key (OpenRouter today), conforming to `APIKeyManaging`.
-    /// Settings ▸ API Keys lists these and writes key changes through the capability. Empty when no
-    /// installed provider needs a user key, in which case the section hides itself.
+    /// Providers that need a user-supplied API key (currently OpenRouter and Z.ai), conforming to
+    /// `APIKeyManaging`. Each matching Customize provider detail shows an API Key section and writes
+    /// changes through the capability. Empty when no installed provider needs a user key.
     let apiKeyProviders: [any APIKeyManaging]
-    /// Quota pace notification preferences (master + three triggers). Drives the Settings section and is
-    /// read by `WidgetDataStore.evaluateNotifications`.
+    /// Quota pace notification preferences (three independent triggers). Drives the Settings section
+    /// and is read by `WidgetDataStore.evaluateNotifications`.
     let notificationSettings: NotificationSettingsStore
     /// Anonymous, opt-out usage telemetry (daily rollups). Exposed so Settings can toggle it and the
     /// app-termination hook can flush any queued events.
@@ -29,6 +31,11 @@ final class AppContainer {
     /// One-time onboarding state (the first-run Customize hint card). Only ever marked pending by
     /// `FirstRunSeeder` on a fresh install, so existing installs never see the card.
     let onboarding: OnboardingStore
+    /// Claims Codex rate-limit reset credits from the resets popover (the app's only provider-API
+    /// write). Shares the Codex provider's auth store and usage client; `nil` only if the Codex
+    /// provider were ever removed from the registry. Injected into the view tree via
+    /// `\.codexResetClaim`.
+    let codexResetClaim: CodexResetClaimService?
     /// The provider runtimes, kept so on-demand credential detection (the Customize "Reset All" reseed)
     /// can re-probe `hasLocalCredentials()` the same way first-run seeding does.
     private let providers: [ProviderRuntime]
@@ -52,22 +59,7 @@ final class AppContainer {
         // run from a terminal. Warmed here so the first refresh finds the cache ready.
         LoginShellEnvironment.shared.prewarm()
 
-        // Default provider order (see AGENTS.md "## Providers"): the three established providers first —
-        // Claude, Codex, Cursor — then every other provider alphabetically by display name. This registry
-        // order is the default provider order (`LayoutStore.orderedProviderIDs` falls back to it, and
-        // `resetToDefault` seeds it), so the dashboard, Customize sections, and the per-provider reset
-        // menu all read this way.
-        let providers: [ProviderRuntime] = [
-            ClaudeProvider(),
-            CodexProvider(),
-            CursorProvider(),
-            AntigravityProvider(),
-            CopilotProvider(),
-            DevinProvider(),
-            GrokProvider(),
-            OpenRouterProvider(),
-            ZAIProvider()
-        ]
+        let providers = ProviderCatalog.make()
         let registry = WidgetRegistry.from(providers)
         let apiKeyProviders = providers.compactMap { $0 as? any APIKeyManaging }
         let enablement = ProviderEnablementStore()
@@ -83,9 +75,14 @@ final class AppContainer {
             orderedDescriptors: { [layout] in layout.visiblePlaced.compactMap { layout.descriptor(for: $0) } },
             notificationSettings: { notificationSettings }
         )
+        let iCloudSync = ICloudUsageSyncStore(dataStore: dataStore)
         // Re-enabling a provider should fetch it promptly, so clear any leftover failure backoff before
         // the enablement wake refreshes. `weak` breaks the cycle (dataStore already captures enablement).
         enablement.onProviderEnabled = { [weak dataStore] id in dataStore?.clearFailureBackoff(for: id) }
+        enablement.onChange = { [weak dataStore, weak iCloudSync] in
+            dataStore?.providerEnablementDidChange()
+            iCloudSync?.scheduleWrite()
+        }
         // Fresh installs start minimal: seed the enabled-provider list (Claude/Codex/Cursor right away,
         // then the detected set once the local credential probe finishes). No-op on every later launch.
         let onboarding = OnboardingStore()
@@ -110,6 +107,49 @@ final class AppContainer {
         self.notificationSettings = notificationSettings
         self.layout = layout
         self.dataStore = dataStore
+        self.iCloudSync = iCloudSync
+
+        // The resets popover's claim service, sharing the Codex provider's credential loading and HTTP
+        // client so the claim's auth can't drift from the provider's. A successful claim forces a Codex
+        // refresh so the meters and credit count reconcile before the popover shows its result. The
+        // forced refresh returns `.skipped` when another refresh already owns the provider — and that
+        // in-flight probe may carry *pre-claim* usage — so retry until this refresh actually runs
+        // (bounded; the racing probe finishes in seconds).
+        self.codexResetClaim = providers.compactMap { $0 as? CodexProvider }.first.map { codex in
+            CodexResetClaimService(
+                authStore: codex.authStore,
+                usageClient: codex.usageClient,
+                refreshAfterClaim: { [weak dataStore] in
+                    // The bound must outlast the provider's slowest refresh: usage fetch (10s timeout)
+                    // + token refresh (15s) + usage retry (10s) + reset-credit fetch (10s) ≈ 45s. The
+                    // common race (the periodic timer's probe) clears in a couple of seconds; the
+                    // pathological one keeps the popover's honest "Resetting…" up rather than showing
+                    // a success banner over pre-claim meters. A `.failed` probe is retried a few times
+                    // too — a transient flake right after the claim must not strand pre-claim meters
+                    // behind a success banner — before giving up loudly (the provider error already
+                    // shows on the card, so the staleness isn't silent).
+                    var failures = 0
+                    for attempt in 0..<45 {
+                        guard let dataStore else { return }
+                        switch await dataStore.refresh(providerID: codex.provider.id, force: true) {
+                        case .refreshed, .cacheHit, .backedOff:
+                            return
+                        case .failed:
+                            failures += 1
+                            guard failures < 3 else {
+                                AppLog.error(LogTag.plugin("codex"), "post-claim refresh failed \(failures) times; meters may lag until the next cycle")
+                                return
+                            }
+                            try? await Task.sleep(for: .seconds(2))
+                        case .skipped:
+                            AppLog.info(LogTag.plugin("codex"), "post-claim refresh waiting out an in-flight refresh (attempt \(attempt + 1))")
+                            try? await Task.sleep(for: .seconds(1))
+                        }
+                    }
+                    AppLog.error(LogTag.plugin("codex"), "post-claim refresh kept being skipped; meters may lag until the next cycle")
+                }
+            )
+        }
 
         // Anonymous, opt-out usage telemetry (two daily-rollup events). Its state lives in a dedicated
         // UserDefaults suite, kept separate from app settings so the user's opt-out choice and the
@@ -143,9 +183,11 @@ final class AppContainer {
         self.transparency = PopoverTransparencyStore()
         self.localAPI = LocalUsageServer(state: { [layout, enablement, dataStore] in
             LocalUsageAPI.State(
-                enabledOrderedIDs: layout.providerOrder.filter { enablement.isEnabled($0) },
+                enabledOrderedIDs: layout.orderedProviderIDs().filter { enablement.isEnabled($0) },
                 knownIDs: Set(registry.providers.map(\.id)),
-                snapshots: dataStore.snapshots
+                snapshots: dataStore.snapshots,
+                limitDescriptors: registry.limitDescriptorsByProvider,
+                errors: dataStore.providerErrors
             )
         })
         let widgetBridgeCoordinator = WidgetBridgeCoordinator.makeDefault(
@@ -162,7 +204,7 @@ final class AppContainer {
         localAPI.start()
         // Become the notification-center delegate so banners show while frontmost — a menu-bar accessory
         // effectively always is. Notification authorization is requested the first time a trigger is
-        // turned on (from Settings), not at launch — triggers default off. No-op under tests.
+        // turned on in Settings, not at launch — triggers default off. No-op under tests.
         AppNotifications.shared.registerAsDelegate()
     }
 

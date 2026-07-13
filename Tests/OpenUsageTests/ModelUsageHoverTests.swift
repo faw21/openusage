@@ -105,8 +105,35 @@ final class ModelUsageHoverTests: XCTestCase {
         }
     }
 
-    func testModelHoverStateOpensThenClosesAroundBothRegions() async {
-        let state = ModelHoverState(revealDelay: .milliseconds(1), hideGrace: .milliseconds(1))
+    func testSharesUseCostWhenEveryModelIsPriced() {
+        let models = [
+            ModelUsageEntry(model: "alpha", totalTokens: 10, costUSD: 3),
+            ModelUsageEntry(model: "beta", totalTokens: 90, costUSD: 1)
+        ]
+
+        XCTAssertEqual(ModelUsageDetail.shares(for: models), [0.75, 0.25])
+    }
+
+    func testSharesUseTokensForEveryModelWhenOneIsUnpriced() {
+        let models = [
+            ModelUsageEntry(model: "alpha", totalTokens: 25, costUSD: 9),
+            ModelUsageEntry(model: "beta", totalTokens: 75, costUSD: nil)
+        ]
+
+        XCTAssertEqual(ModelUsageDetail.shares(for: models), [0.25, 0.75])
+    }
+
+    func testSharesAreZeroWhenThereIsNoCostOrTokenTotal() {
+        let models = [
+            ModelUsageEntry(model: "alpha", totalTokens: 0, costUSD: nil),
+            ModelUsageEntry(model: "beta", totalTokens: 0, costUSD: nil)
+        ]
+
+        XCTAssertEqual(ModelUsageDetail.shares(for: models), [0, 0])
+    }
+
+    func testHoverPopoverStateOpensThenClosesAroundBothRegions() async {
+        let state = HoverPopoverState(revealDelay: .milliseconds(1), hideGrace: .milliseconds(1))
         XCTAssertFalse(state.isPresented)
 
         state.inlineHover(true)
@@ -123,16 +150,16 @@ final class ModelUsageHoverTests: XCTestCase {
         XCTAssertFalse(state.isPresented, "closes once the cursor has left both the row and the popover")
     }
 
-    func testModelHoverStateQuickPassDoesNotOpen() async {
-        let state = ModelHoverState(revealDelay: .milliseconds(60), hideGrace: .milliseconds(1))
+    func testHoverPopoverStateQuickPassDoesNotOpen() async {
+        let state = HoverPopoverState(revealDelay: .milliseconds(60), hideGrace: .milliseconds(1))
         state.inlineHover(true)
         state.inlineHover(false)
         try? await Task.sleep(for: .milliseconds(90))
         XCTAssertFalse(state.isPresented, "a quick pass over the row never opens the popover")
     }
 
-    func testModelHoverStateDismissForcesClosed() async {
-        let state = ModelHoverState(revealDelay: .milliseconds(1), hideGrace: .milliseconds(1))
+    func testHoverPopoverStateDismissForcesClosed() async {
+        let state = HoverPopoverState(revealDelay: .milliseconds(1), hideGrace: .milliseconds(1))
         state.inlineHover(true)
         try? await Task.sleep(for: .milliseconds(40))
         XCTAssertTrue(state.isPresented)

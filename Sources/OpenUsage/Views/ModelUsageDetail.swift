@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// Hover detail for a spend period: a flat ranked list of models, each two text lines (name/cost,
@@ -16,12 +15,13 @@ struct ModelUsageDetail: View {
     private static let width: CGFloat = 280
 
     var body: some View {
-        let percents = Self.wholePercents(breakdown.models.map(share(for:)))
+        let shares = Self.shares(for: breakdown.models)
+        let percents = Self.wholePercents(shares)
         VStack(alignment: .leading, spacing: 8) {
             header
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(breakdown.models.indices, id: \.self) { index in
-                    modelRow(breakdown.models[index], percent: percents[index])
+                    modelRow(breakdown.models[index], share: shares[index], percent: percents[index])
                 }
             }
             PopoverSourceNote(text: breakdown.sourceNote)
@@ -47,7 +47,7 @@ struct ModelUsageDetail: View {
     /// Two text lines and the bar: model name / cost on top, share percent / tokens beneath. The name
     /// only competes with the short cost figure, so it almost never truncates; the percent line answers
     /// what the bar can't say precisely.
-    private func modelRow(_ model: ModelUsageEntry, percent: Int) -> some View {
+    private func modelRow(_ model: ModelUsageEntry, share: Double, percent: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(model.model)
@@ -85,7 +85,7 @@ struct ModelUsageDetail: View {
                     .overlay(alignment: .leading) {
                         Capsule()
                             .fill(Theme.meterFill(.normal))
-                            .frame(width: proxy.size.width * share(for: model))
+                            .frame(width: proxy.size.width * share)
                     }
             }
             .frame(height: density.meterHeight)
@@ -101,17 +101,21 @@ struct ModelUsageDetail: View {
     /// One basis for the whole list: cost shares only when every listed model is priced — otherwise a
     /// column mixing cost shares (priced rows) with token shares (unpriced rows) would sum past 100%.
     /// With any unpriced model present, every row falls back to its token share.
-    private func share(for model: ModelUsageEntry) -> Double {
-        let allPriced = breakdown.models.allSatisfy { $0.costUSD != nil }
+    static func shares(for models: [ModelUsageEntry]) -> [Double] {
+        let allPriced = models.allSatisfy { $0.costUSD != nil }
         if allPriced {
-            let costTotal = breakdown.models.reduce(0.0) { $0 + ($1.costUSD ?? 0) }
-            if costTotal > 0, let cost = model.costUSD {
-                return min(max(cost / costTotal, 0), 1)
+            let costTotal = models.reduce(0.0) { $0 + ($1.costUSD ?? 0) }
+            if costTotal > 0 {
+                return models.map { model in
+                    min(max((model.costUSD ?? 0) / costTotal, 0), 1)
+                }
             }
         }
-        let tokenTotal = breakdown.models.reduce(0) { $0 + $1.totalTokens }
-        guard tokenTotal > 0 else { return 0 }
-        return min(max(Double(model.totalTokens) / Double(tokenTotal), 0), 1)
+        let tokenTotal = models.reduce(0) { $0 + $1.totalTokens }
+        guard tokenTotal > 0 else { return models.map { _ in 0 } }
+        return models.map { model in
+            min(max(Double(model.totalTokens) / Double(tokenTotal), 0), 1)
+        }
     }
 
     /// Integer percentages that always total exactly 100 (largest-remainder rounding): rounding each
@@ -135,84 +139,5 @@ struct ModelUsageDetail: View {
             leftover -= 1
         }
         return percents
-    }
-}
-
-/// Drives the hover-revealed model popover for spend rows. It mirrors `TrendHoverState`: deliberate
-/// reveal dwell, short hide grace while crossing into the popover, and a global close backstop.
-@MainActor
-@Observable
-final class ModelHoverState {
-    var isPresented = false
-
-    @ObservationIgnored private static let live = NSHashTable<ModelHoverState>.weakObjects()
-
-    static func dismissAll() {
-        for state in live.allObjects { state.dismiss() }
-    }
-
-    @ObservationIgnored private var overInline = false
-    @ObservationIgnored private var overDetail = false
-    @ObservationIgnored private var showTask: Task<Void, Never>?
-    @ObservationIgnored private var hideTask: Task<Void, Never>?
-
-    private let revealDelay: Duration
-    private let hideGrace: Duration
-
-    init(revealDelay: Duration = .milliseconds(400), hideGrace: Duration = .milliseconds(180)) {
-        self.revealDelay = revealDelay
-        self.hideGrace = hideGrace
-        Self.live.add(self)
-    }
-
-    func inlineHover(_ active: Bool) {
-        overInline = active
-        active ? scheduleShow() : scheduleHide()
-    }
-
-    func detailHover(_ inside: Bool) {
-        overDetail = inside
-        if inside {
-            hideTask?.cancel()
-            hideTask = nil
-        } else {
-            scheduleHide()
-        }
-    }
-
-    func dismiss() {
-        showTask?.cancel()
-        showTask = nil
-        hideTask?.cancel()
-        hideTask = nil
-        overInline = false
-        overDetail = false
-        isPresented = false
-    }
-
-    private func scheduleShow() {
-        hideTask?.cancel()
-        hideTask = nil
-        guard !isPresented, showTask == nil else { return }
-        let delay = revealDelay
-        showTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled else { return }
-            if overInline { isPresented = true }
-            showTask = nil
-        }
-    }
-
-    private func scheduleHide() {
-        showTask?.cancel()
-        showTask = nil
-        hideTask?.cancel()
-        let delay = hideGrace
-        hideTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled else { return }
-            if !overInline, !overDetail { isPresented = false }
-            hideTask = nil
-        }
     }
 }

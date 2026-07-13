@@ -5,18 +5,19 @@ A high-level map of how OpenUsage is put together, for people working on the cod
 
 ## The shape of the app
 
-OpenUsage's host app is a SwiftPM executable. It's a menu-bar app: a SwiftUI interface hosted inside an
-AppKit status item and panel. A small standalone Xcode project builds the WidgetKit extension that the
-packaging scripts embed in the host app. The code is grouped by role:
+OpenUsage is a SwiftPM package with a shared module and two thin executables. The main executable is a
+menu-bar app: a SwiftUI interface hosted inside an AppKit status item and panel. A small standalone Xcode
+project builds the WidgetKit extension that the packaging scripts embed in the host app. The code is
+grouped by role:
 
 - `App/` — startup and the AppKit bridge (status item, panel, the app entry point).
 - `Models/` — the small value types the rest of the app speaks in (`MetricLine`, `WidgetData`, descriptors).
-- `Providers/` — one folder per provider (Claude, Codex, Cursor, Devin, Grok).
+- `Providers/` — one folder per provider (Claude, Codex, Cursor, Devin, Grok, OpenCode, …).
 - `Stores/` — the mutable state the UI observes.
 - `Services/` — shared infrastructure (HTTP, the local API, process running).
 - `Support/` — small shared helpers (formatting, parsing, animations).
 - `Views/` — the SwiftUI screens (dashboard, customize, settings, menu-bar strip).
-- `Widgets/` — the read-only macOS WidgetKit extension.
+- `Widgets/` — the host-side bridge to the read-only macOS WidgetKit extension.
 
 ## Composition root
 
@@ -24,6 +25,12 @@ packaging scripts embed in the host app. The code is grouped by role:
 providers, turns it into a `WidgetRegistry`, creates the stores, starts the periodic refresh loop, and
 starts the local HTTP API. Everything else receives what it needs from here rather than reaching for
 globals, which keeps the pieces testable in isolation.
+
+The `openusage` executable imports the same module. A normal invocation reads `ProviderSnapshotCache`
+and exits; `--force` constructs the canonical `ProviderCatalog` and calls `WidgetDataStore`'s forced
+refresh path before reading. Providers annotate the scalar resources they export through the stable
+limits contract; the CLI and `/v1/limits` share one serializer over those same normalized snapshots.
+It never launches the GUI or duplicates provider, auth, pricing, or mapping logic.
 
 ## The provider pipeline
 
@@ -33,7 +40,8 @@ Each provider is a small module that conforms to `ProviderRuntime`. A refresh fl
    never asks the user to paste tokens.
 2. **Usage client** — makes the HTTP calls to the provider's API.
 3. **Mapper** — turns the provider's response into the app's own vocabulary: a `ProviderSnapshot`
-   containing `MetricLine` values (`.progress`, `.text`, `.badge`).
+   containing typed widget values (`.progress`, `.values`, `.badge`, `.chart`) plus `.text` notices that
+   remain available through the local API but do not render as widgets.
 
 Because every provider produces the same normalized `MetricLine` shapes, the UI renders them all the same
 way and doesn't need to know provider-specific details. To add one, see
@@ -43,11 +51,14 @@ way and doesn't need to know provider-specific details. To add one, see
 
 The UI reads from a few observable stores:
 
-- `WidgetDataStore` — the latest snapshot per provider, plus refresh and caching. This is what the
-  dashboard rows and menu-bar strip read.
+- `WidgetDataStore` — the latest snapshot per provider, plus refresh and caching. It keeps machine-local
+  cached snapshots separate from rendered snapshots so peer history can never be written back out and
+  counted again.
 - `LayoutStore` — which metrics are shown, the provider/metric order, and which metrics are starred for the
   menu bar.
 - `ProviderEnablementStore` — which providers the user has turned on or off.
+- `ICloudUsageSyncStore` — one coordinated, atomic history file per Mac, iCloud metadata notifications,
+  and the visible device/error state. File access is injected for lifecycle and failure tests.
 
 Refresh runs on a timer in `AppContainer`; each pass respects the cache, so the network is only hit once a
 snapshot has actually expired.
@@ -62,6 +73,10 @@ asks WidgetKit to reload only when the semantic content changed.
 The sandboxed extension reads that file to render one configured provider. It never imports provider
 runtimes, scans local logs, refreshes tokens, or calls provider APIs. If the host stops, the extension
 keeps the last good document and marks it outdated.
+
+Providers with spend tiles carry an explicit history scope beside their export descriptors. Machine-local
+sources can be summed across device files; account-wide sources such as Cursor cannot. `WidgetDataStore`
+re-renders only the spend rows from the union, leaving quota and error state local.
 
 ## The AppKit bridge
 
@@ -81,10 +96,10 @@ standard controls with the same behavior (the footer still pins, the buttons kee
 one of those version checks lives in a single file — `Support/LiquidGlassFallbacks.swift` — so the views
 stay free of `#available` checks.
 
-The release build (`script/release.sh`) ships universal host and widget binaries (arm64 + x86_64), so a
-single DMG runs natively on both Apple Silicon and Intel Macs. The dev build
-(`script/build_and_run.sh`) stays host-arch only. The extension is signed before the containing app;
-both carry the same channel-specific App Group entitlement.
+The release build (`script/release.sh`) ships universal host, CLI, and widget binaries (arm64 + x86_64),
+so a single DMG runs natively on both Apple Silicon and Intel Macs. The dev build
+(`script/build_and_run.sh`) stays host-arch only. The extension is signed before the containing app; both
+carry the same channel-specific App Group entitlement.
 
 ## Local HTTP API
 

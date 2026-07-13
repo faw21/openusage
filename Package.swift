@@ -7,7 +7,8 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "OpenUsage", targets: ["OpenUsage"]),
+        .executable(name: "OpenUsage", targets: ["OpenUsageApp"]),
+        .executable(name: "openusage-cli", targets: ["OpenUsageCLI"]),
         .library(name: "OpenUsageWidgetSupport", targets: ["OpenUsageWidgetSupport"])
     ],
     dependencies: [
@@ -20,7 +21,7 @@ let package = Package(
         .package(url: "https://github.com/PostHog/posthog-ios.git", from: "3.62.0")
     ],
     targets: [
-        .executableTarget(
+        .target(
             name: "OpenUsage",
             dependencies: [
                 "OpenUsageWidgetSupport",
@@ -46,10 +47,34 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        .executableTarget(
+            name: "OpenUsageApp",
+            dependencies: ["OpenUsage"],
+            path: "Sources/OpenUsageApp",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .executableTarget(
+            name: "OpenUsageCLI",
+            dependencies: ["OpenUsage"],
+            path: "Sources/OpenUsageCLI",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         .testTarget(
             name: "OpenUsageTests",
             dependencies: ["OpenUsage", "OpenUsageWidgetSupport"],
             path: "Tests/OpenUsageTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .testTarget(
+            name: "OpenUsageCLITests",
+            dependencies: ["OpenUsageCLI"],
+            path: "Tests/OpenUsageCLITests",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

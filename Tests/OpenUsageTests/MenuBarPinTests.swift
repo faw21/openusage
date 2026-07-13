@@ -49,7 +49,7 @@ final class MenuBarPinTests: XCTestCase {
             store.setPinned(true, for: "\(provider).m2")
             XCTAssertFalse(store.canPin("\(provider).m3"))
         }
-        XCTAssertEqual(store.pinnedCount, 8)
+        XCTAssertEqual(store.pinnedMetricIDs.count, 8)
     }
 
     func testPinDenialReasonsAndFooterNotice() {
@@ -91,7 +91,7 @@ final class MenuBarPinTests: XCTestCase {
         store.setPinned(true, for: "a.m2")
         store.setPinned(true, for: "a.m1")
 
-        XCTAssertEqual(store.pinnedDescriptorIDsInOrder, ["a.m1", "a.m2", "b.m2"])
+        XCTAssertEqual(store.pinnedGroups.flatMap { $0.metrics.map(\.id) }, ["a.m1", "a.m2", "b.m2"])
         XCTAssertEqual(store.pinnedGroups.map(\.provider.id), ["a", "b"])
     }
 

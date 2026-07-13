@@ -16,6 +16,8 @@ set -euo pipefail
 #        OPENUSAGE_TEAM_ID  Apple Developer team id (normally inferred from the identity)
 #        WIDGETS_REQUIRED   set to 1 to fail instead of producing a host-only ad-hoc build
 #        CONFIG             "release" (default) or "debug"
+#        ICLOUD_PROVISIONING_PROFILE  optional override for the development provisioning profile;
+#                         otherwise the newest matching installed profile is selected automatically
 
 MODE="${1:-run}"
 CONFIG="${CONFIG:-release}"
@@ -23,6 +25,7 @@ CONFIG="${CONFIG:-release}"
 TARGET_NAME="OpenUsage"                 # SwiftPM target / binary name
 APP_DISPLAY="OpenUsage"                 # user-facing app name
 BUNDLE_ID="${BUNDLE_ID:-com.robinebers.openusage.dev}"
+ICLOUD_CONTAINER_ID="iCloud.com.robinebers.openusage.dev"
 MIN_SYSTEM_VERSION="15.0"
 APP_VERSION="0.7.0"
 APP_BUILD="0.7.0"
@@ -32,11 +35,14 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_DISPLAY.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_HELPERS="$APP_CONTENTS/Helpers"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$TARGET_NAME"
+CLI_BINARY="$APP_HELPERS/openusage"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 RESOURCE_BUNDLE_NAME="${TARGET_NAME}_${TARGET_NAME}.bundle"
 ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.dev.entitlements.plist"
+SIGN_ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.local.entitlements.plist"
 WIDGET_BUNDLE_ID="$BUNDLE_ID.widgets"
 if [ "$BUNDLE_ID" = "com.robinebers.openusage" ]; then
   OPENUSAGE_URL_SCHEME="${OPENUSAGE_URL_SCHEME:-openusage}"
@@ -44,9 +50,8 @@ else
   OPENUSAGE_URL_SCHEME="${OPENUSAGE_URL_SCHEME:-openusage-dev}"
 fi
 
-# WidgetKit/App Groups need stable team-signed identities. Keep the existing ad-hoc host-only fallback
-# for contributors without an Apple Development certificate; widget work can demand the full path with
-# WIDGETS_REQUIRED=1 so a missing identity never looks like a successful widget build.
+# WidgetKit/App Groups need a stable team-signed identity. Keep the host-only ad-hoc fallback for
+# contributors without an Apple Development certificate; widget work can require the full path.
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 if [ -z "$CODESIGN_IDENTITY" ]; then
   CODESIGN_IDENTITY=$(/usr/bin/security find-identity -p codesigning -v 2>/dev/null \
@@ -54,8 +59,6 @@ if [ -z "$CODESIGN_IDENTITY" ]; then
 fi
 OPENUSAGE_TEAM_ID="${OPENUSAGE_TEAM_ID:-}"
 if [ -z "$OPENUSAGE_TEAM_ID" ] && [ -n "$CODESIGN_IDENTITY" ]; then
-  # The value in parentheses in an Apple Development identity is not guaranteed to be the
-  # certificate's Team ID. The authoritative team identifier is the subject OU.
   CERTIFICATE_NAME="$CODESIGN_IDENTITY"
   if printf '%s' "$CODESIGN_IDENTITY" | /usr/bin/grep -Eq '^[[:xdigit:]]{40}$'; then
     CERTIFICATE_NAME=$(/usr/bin/security find-identity -p codesigning -v 2>/dev/null \
@@ -90,17 +93,27 @@ echo "==> swift build ($CONFIG)"
 swift build -c "$CONFIG"
 BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$TARGET_NAME"
+BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 
 if [ ! -x "$BUILD_BINARY" ]; then
   echo "missing built binary: $BUILD_BINARY" >&2
   exit 1
 fi
+if [ ! -x "$BUILD_CLI_BINARY" ]; then
+  echo "missing built CLI: $BUILD_CLI_BINARY" >&2
+  exit 1
+fi
 
 echo "==> staging $APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES"
+mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
+cp "$BUILD_CLI_BINARY" "$CLI_BINARY"
 chmod +x "$APP_BINARY"
+chmod +x "$CLI_BINARY"
+# The shared module links Sparkle even though the one-shot CLI never initializes the updater. Helpers
+# sit one directory below Contents, so give dyld the same embedded-framework location as the app binary.
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$CLI_BINARY"
 
 # SwiftPM stamps LC_BUILD_VERSION's `sdk` field with the deployment target (macOS 15), not the real
 # SDK it compiled against. macOS gates the modern Liquid Glass control appearance (pop-up buttons,
@@ -191,11 +204,52 @@ cat >"$INFO_PLIST" <<PLIST
       <array><string>$OPENUSAGE_URL_SCHEME</string></array>
     </dict>
   </array>
+  <key>NSUbiquitousContainers</key>
+  <dict>
+    <key>iCloud.com.robinebers.openusage.dev</key>
+    <dict>
+      <key>NSUbiquitousContainerIsDocumentScopePublic</key>
+      <false/>
+      <key>NSUbiquitousContainerName</key>
+      <string>OpenUsage</string>
+      <key>NSUbiquitousContainerSupportedFolderLevels</key>
+      <string>None</string>
+    </dict>
+  </dict>
 </dict>
 </plist>
 PLIST
 
+if [ -n "${ICLOUD_PROVISIONING_PROFILE:-}" ] && [ ! -f "$ICLOUD_PROVISIONING_PROFILE" ]; then
+  echo "iCloud provisioning profile not found: $ICLOUD_PROVISIONING_PROFILE" >&2
+  exit 1
+fi
+
+if [ -z "${ICLOUD_PROVISIONING_PROFILE:-}" ]; then
+  ICLOUD_PROVISIONING_PROFILE=$("$ROOT_DIR/script/find_icloud_provisioning_profile.sh" \
+    "$BUNDLE_ID" "$ICLOUD_CONTAINER_ID" || true)
+fi
+
+if [ -n "${ICLOUD_PROVISIONING_PROFILE:-}" ]; then
+  echo "==> using iCloud provisioning profile: $ICLOUD_PROVISIONING_PROFILE"
+  cp "$ICLOUD_PROVISIONING_PROFILE" "$APP_CONTENTS/embedded.provisionprofile"
+  SIGN_ENTITLEMENTS="$DIST_DIR/OpenUsage.dev.resolved.entitlements.plist"
+  "$ROOT_DIR/script/render_icloud_entitlements.sh" \
+    "$ENTITLEMENTS" "$ICLOUD_PROVISIONING_PROFILE" "$SIGN_ENTITLEMENTS" \
+    "$ICLOUD_CONTAINER_ID"
+else
+  echo "WARNING: no matching installed iCloud provisioning profile was found; iCloud Sync will be unavailable in this build." >&2
+fi
+
 if [ "$WIDGETS_ENABLED" = "1" ]; then
+  HOST_ENTITLEMENTS="$DIST_DIR/OpenUsage.host.entitlements.plist"
+  cp "$SIGN_ENTITLEMENTS" "$HOST_ENTITLEMENTS"
+  SIGN_ENTITLEMENTS="$HOST_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy \
+    -c 'Add :com.apple.security.application-groups array' \
+    -c "Add :com.apple.security.application-groups:0 string $OPENUSAGE_APP_GROUP" \
+    "$SIGN_ENTITLEMENTS"
+
   WIDGET_CONFIGURATION=Release
   [ "$CONFIG" = "debug" ] && WIDGET_CONFIGURATION=Debug
   APP_BUNDLE="$APP_BUNDLE" \
@@ -216,17 +270,8 @@ fi
 "$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime"
 
 if [ -n "$CODESIGN_IDENTITY" ]; then
-  HOST_ENTITLEMENTS="$DIST_DIR/OpenUsage.host.entitlements.plist"
+  /usr/bin/codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$CLI_BINARY" >/dev/null
   if [ "$WIDGETS_ENABLED" = "1" ]; then
-    cat >"$HOST_ENTITLEMENTS" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>com.apple.security.get-task-allow</key><true/>
-  <key>com.apple.security.application-groups</key>
-  <array><string>$OPENUSAGE_APP_GROUP</string></array>
-</dict></plist>
-PLIST
     WIDGET_ENTITLEMENTS="$DIST_DIR/OpenUsage.widget.entitlements.plist"
     cat >"$WIDGET_ENTITLEMENTS" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -241,18 +286,17 @@ PLIST
       --sign "$CODESIGN_IDENTITY" \
       --entitlements "$WIDGET_ENTITLEMENTS" \
       "$APP_BUNDLE/Contents/PlugIns/OpenUsageWidgets.appex" >/dev/null
-  else
-    HOST_ENTITLEMENTS="$ENTITLEMENTS"
   fi
   # Not --deep: the Sparkle framework is already signed above and must keep that signature.
   /usr/bin/codesign --force --options runtime \
     --sign "$CODESIGN_IDENTITY" \
-    --entitlements "$HOST_ENTITLEMENTS" \
+    --entitlements "$SIGN_ENTITLEMENTS" \
     "$APP_BUNDLE" >/dev/null
   /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
   echo "==> signed with: $CODESIGN_IDENTITY"
 else
-  /usr/bin/codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE" >/dev/null
+  /usr/bin/codesign --force --sign - "$CLI_BINARY" >/dev/null
+  /usr/bin/codesign --force --sign - --entitlements "$SIGN_ENTITLEMENTS" "$APP_BUNDLE" >/dev/null
   echo "WARNING: no Apple Development identity found; ad-hoc signed." >&2
 fi
 

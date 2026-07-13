@@ -24,8 +24,8 @@ final class WidgetDataStore {
     private let orderedDescriptors: @MainActor () -> [WidgetDescriptor]
     /// Clock for the failure-backoff window. Injected so tests can advance time deterministically.
     private let now: () -> Date
-    /// Quota-notification preferences (master + per-trigger). Injected; `nil` disables notifications
-    /// entirely (tests and previews that don't wire it).
+    /// Quota-notification preferences (three independent triggers). Injected; `nil` disables
+    /// notifications entirely (tests and previews that don't wire it).
     private let notificationSettings: (@MainActor () -> NotificationSettingsStore)?
     /// Where a fired milestone is delivered: `(idPrefix, title, subtitle, body) -> Bool`. The Bool is
     /// whether it was actually delivered (authorized + scheduled); on false the caller leaves the
@@ -45,7 +45,12 @@ final class WidgetDataStore {
     /// would cause. The manual `force` refresh (⌘R) always bypasses it.
     private static let failureRetryBackoff: TimeInterval = 60
 
+    /// Rendered snapshots consumed by every UI/API surface. Equal to `localSnapshots` when iCloud sync
+    /// is off; machine-local history rows are rebuilt from the union while sync is on.
     var snapshots: [String: ProviderSnapshot] = [:]
+    /// Last-good snapshots produced on this Mac. These alone are cached and exported to iCloud, so a
+    /// peer contribution can never echo back out and multiply on the next device.
+    private(set) var localSnapshots: [String: ProviderSnapshot] = [:]
     var refreshingProviderIDs: Set<String> = []
     /// Wall-clock time the most recent full refresh pass finished. Together with the chosen refresh
     /// cadence it drives the dashboard footer's live "Next update in …" countdown, so the footer reflects
@@ -61,15 +66,18 @@ final class WidgetDataStore {
     /// observable UI state, so it's excluded from `@Observable` tracking.
     @ObservationIgnored private var failureRetryAfter: [String: Date] = [:]
 
-    /// Per-metric dedup state for quota notifications, keyed by `providerID + "." + descriptorID`.
-    /// Not observable UI state. Dropped for a provider when it's disabled, so re-enabling starts fresh.
-    @ObservationIgnored private var notificationState: [String: NotificationState] = [:]
+    /// Owns the quota pace-notification subsystem (dedup state, fire/deliver decision, trace). This store
+    /// just gathers each pass's enabled bounded metrics and delegates.
+    @ObservationIgnored private let notificationEvaluator = QuotaNotificationEvaluator()
 
     /// Telemetry hook wired by `AppContainer`. Invoked once per *real* provider fetch — `.refreshed` or
     /// `.failed` only, never the cache-hit/skip/backoff outcomes that the 5-minute timer produces in
     /// bulk — so the recorder can roll daily usage and error counts up into one event per provider per
     /// day. `nil` (and so a no-op) in tests and previews. Not observable UI state.
     @ObservationIgnored var onRefreshOutcome: (@MainActor (String, RefreshOutcome, ErrorCategory?, Bool) -> Void)?
+    /// Wired by `ICloudUsageSyncStore`; debounced there so a concurrent provider batch produces one file.
+    @ObservationIgnored var onLocalHistoryChanged: (@MainActor () -> Void)?
+    @ObservationIgnored private var peerHistoryDocuments: [UsageHistoryDocument] = []
 
     /// Global meter style: whether every bounded tile (and the menu-bar value) renders as "used" or
     /// "left/remaining". Persisted so the choice survives relaunch; defaults to `.remaining`.
@@ -119,7 +127,9 @@ final class WidgetDataStore {
         // Stale-while-revalidate: load whatever was cached (expired included) so the menu bar and
         // dashboard show last-known values immediately at launch instead of "—"; the refresh loop
         // replaces them as soon as fresh data lands.
-        self.snapshots = cache.loadSnapshots(providerIDs: registry.providers.map(\.id))
+        let loaded = cache.loadSnapshots(providerIDs: registry.providers.map(\.id))
+        self.localSnapshots = loaded
+        self.snapshots = loaded
     }
 
     /// Refresh every enabled provider, concurrently — one slow provider never delays the rest.
@@ -134,7 +144,7 @@ final class WidgetDataStore {
         let start = Date()
         AppLog.info(.refresh, "batch start (\(providerIDs.count) providers, force=\(force))")
         let tasks = providerIDs.map { providerID in
-            Task { await self.refresh(providerID: providerID, force: force) }
+            Task { await self.refresh(providerID: providerID, force: force, notifyHistoryChange: false) }
         }
         var outcomes: [RefreshOutcome] = []
         outcomes.reserveCapacity(tasks.count)
@@ -152,161 +162,47 @@ final class WidgetDataStore {
         let failed = outcomes.count { $0 == .failed }
         let cached = outcomes.count { $0 == .cacheHit }
         let backedOff = outcomes.count { $0 == .backedOff }
+        if refreshed > 0 { onLocalHistoryChanged?() }
         AppLog.info(.refresh, "batch end (\(durationMs)ms, \(refreshed) ok / \(failed) failed / \(cached) cached / \(backedOff) backed off)")
     }
 
     /// Evaluate every visible, enabled metric for a quota pace milestone and post a notification for any
     /// that just crossed one. Driven from the periodic loop *after* `refreshAll`, so it catches pace
-    /// worsening from time passing (not only from a fresh fetch). Deduped per metric per reset window via
-    /// `notificationState`; the no-trustworthy-pace states (no data, fresh session, level bands) never
-    /// fire. A no-op when notifications are unconfigured (tests/previews) or all triggers are off.
+    /// worsening from time passing (not only from a fresh fetch). Deduped per metric per reset window by
+    /// the evaluator's per-key state. No-data metrics never fire; bounded level-only metrics can fire
+    /// Almost Out, but not pace-based milestones. A no-op when notifications are unconfigured
+    /// (tests/previews) or all triggers are off.
     ///
     /// State for metrics not visited this pass (e.g. a provider the user just disabled, or a metric
     /// removed from the layout) is pruned, so re-enabling/re-adding starts fresh rather than carrying a
     /// stale "already fired" flag.
     func evaluateNotifications(now: Date = Date()) async {
         guard let settingsProvider = notificationSettings else { return }
-        let settings = settingsProvider()
-        let toggles = settings.toggles
-        var nextState: [String: NotificationState] = [:]
-        for descriptor in orderedDescriptors() where isProviderEnabled(descriptor.providerID) {
-            let key = "\(descriptor.providerID).\(descriptor.id)"
-            let data = data(for: descriptor)
-            // Unbounded rows (no limit) and charts have no pace story — skip them outright so they never
-            // occupy state. `meterState` returns `.level`/`.noData` for them anyway, which wouldn't fire,
-            // but skipping keeps the state map to genuine meters.
-            guard data.isBounded else { continue }
-            let state = data.meterState(now: now)
-            let previous = notificationState[key] ?? NotificationState()
-            let currentBucket = PaceNotificationLogic.bucket(for: state)
-            let resetDelta = Self.resetDelta(current: data.resetsAt, previous: previous.resetsAt)
-            let resetAdvanced = PaceNotificationLogic.resetWindowAdvanced(
-                resetsAt: data.resetsAt,
-                previousReset: previous.resetsAt
-            )
-            let result = PaceNotificationLogic.transitions(
-                state: state,
-                fraction: data.remainingFraction,
-                resetsAt: data.resetsAt,
-                previous: previous,
-                toggles: toggles
-            )
-            if !result.fire.isEmpty || resetAdvanced || Self.isPositiveResetMovement(resetDelta) {
-                AppLog.debug(.notifications, "decision \(key): metric=\(data.title) state=\(Self.notificationStateDescription(state)) bucket=\(Self.bucketDescription(currentBucket)) previousBucket=\(Self.bucketDescription(previous.previousBucket)) remaining=\(Self.percentDescription(data.remainingFraction)) reset=\(Self.dateDescription(data.resetsAt)) previousReset=\(Self.dateDescription(previous.resetsAt)) resetDelta=\(Self.resetDeltaDescription(resetDelta)) resetReason=\(Self.resetReasonDescription(delta: resetDelta, advanced: resetAdvanced)) primed=\(previous.primed) wasUnderTen=\(previous.wasUnderTenPercent) firedBefore=\(Self.milestoneDescription(previous.firedMilestones)) fire=\(Self.milestoneDescription(result.fire)) newBucket=\(Self.bucketDescription(result.newState.previousBucket)) newFired=\(Self.milestoneDescription(result.newState.firedMilestones)) toggles=\(Self.toggleDescription(toggles))")
+        let toggles = settingsProvider().toggles
+        // Gather this pass's enabled, bounded, visible metrics — unbounded rows and charts have no pace
+        // story (their meterState never fires), so they're skipped here rather than occupying state.
+        // Order is the layout order; the evaluator prunes state for anything not passed this pass.
+        // Deliberate delta from the pre-extraction loop: the pass decides from this snapshot, taken
+        // before the first delivery `await`, where the old inline loop re-read `data(for:)` between
+        // deliveries — a mid-pass refresh no longer changes later metrics' inputs within one pass.
+        let metrics = orderedDescriptors()
+            .filter { isProviderEnabled($0.providerID) }
+            .compactMap { descriptor -> QuotaNotificationEvaluator.Metric? in
+                let data = data(for: descriptor)
+                guard data.isBounded else { return nil }
+                return QuotaNotificationEvaluator.Metric(
+                    key: "\(descriptor.providerID).\(descriptor.id)",
+                    providerID: descriptor.providerID,
+                    data: data
+                )
             }
-            // Deliver each fired milestone, then commit dedup state only for the ones that actually
-            // delivered. The logic doesn't mark milestones fired — that's done here, after delivery
-            // succeeds, so a skipped/failed delivery (not authorized, or `add` errored) leaves the
-            // milestone un-marked and the state advance reverted, re-firing on the next pass instead of
-            // being lost for the rest of the reset window.
-            var next = result.newState
-            var paceDelivered = false
-            var underDelivered = false
-            for milestone in result.fire {
-                let delivered = await post(milestone: milestone, data: data, providerID: descriptor.providerID)
-                if delivered {
-                    if milestone == .underTenPercent { underDelivered = true } else { paceDelivered = true }
-                    next.firedMilestones.insert(milestone)
-                }
-            }
-            if result.fire.contains(where: { $0 != .underTenPercent }) && !paceDelivered {
-                next.previousBucket = previous.previousBucket
-            }
-            if result.fire.contains(.underTenPercent) && !underDelivered {
-                next.wasUnderTenPercent = previous.wasUnderTenPercent
-            }
-            if !result.fire.isEmpty {
-                AppLog.debug(.notifications, "commit \(key): paceDelivered=\(paceDelivered) underTenDelivered=\(underDelivered) persistedBucket=\(Self.bucketDescription(next.previousBucket)) persistedWasUnderTen=\(next.wasUnderTenPercent) persistedFired=\(Self.milestoneDescription(next.firedMilestones))")
-            }
-            nextState[key] = next
-        }
-        notificationState = nextState
-    }
-
-    /// Build and post one milestone notification. The title is the trigger name (matches the Settings
-    /// row), the subtitle is "Provider Metric" so the user knows which quota worsened, and the body is
-    /// the plain-language verdict. Title Case per AGENTS.md. Returns whether delivery succeeded.
-    private func post(milestone: PaceMilestone, data: WidgetData, providerID: String) async -> Bool {
-        let metricName = data.title
-        let providerName = providersByID[providerID]?.provider.displayName ?? providerID
-        let subtitle = "\(providerName) \(metricName)"
-        return await postNotification(
-            "\(providerID).\(milestone.rawValue)",
-            milestone.notificationTitle,
-            subtitle,
-            milestone.body
+        await notificationEvaluator.evaluate(
+            metrics: metrics,
+            toggles: toggles,
+            now: now,
+            providerName: { [providersByID] id in providersByID[id]?.provider.displayName ?? id },
+            post: postNotification
         )
-    }
-
-    // MARK: - Notification decision trace helpers (debug logging only)
-
-    private static func resetDelta(current: Date?, previous: Date?) -> TimeInterval? {
-        guard let current, let previous else { return nil }
-        return current.timeIntervalSince(previous)
-    }
-
-    private static func isPositiveResetMovement(_ delta: TimeInterval?) -> Bool {
-        guard let delta else { return false }
-        return delta > 0
-    }
-
-    private static func resetReasonDescription(delta: TimeInterval?, advanced: Bool) -> String {
-        guard let delta else { return "firstOrMissingReset" }
-        if advanced { return "advanced" }
-        if delta > 0 { return "ignoredJitter" }
-        if delta < 0 { return "movedEarlier" }
-        return "unchanged"
-    }
-
-    private static func resetDeltaDescription(_ delta: TimeInterval?) -> String {
-        guard let delta else { return "nil" }
-        return String(format: "%.3fs", delta)
-    }
-
-    private static func dateDescription(_ date: Date?) -> String {
-        date.map { OpenUsageISO8601.string(from: $0) } ?? "nil"
-    }
-
-    private static func percentDescription(_ value: Double) -> String {
-        String(format: "%.1f%%", value * 100)
-    }
-
-    private static func toggleDescription(_ toggles: PaceNotificationToggles) -> String {
-        "under10=\(toggles.underTenPercent),close=\(toggles.healthyToClose),runOut=\(toggles.closeToRunningOut)"
-    }
-
-    private static func milestoneDescription(_ milestones: Set<PaceMilestone>) -> String {
-        milestoneDescription(milestones.sorted { $0.rawValue < $1.rawValue })
-    }
-
-    private static func milestoneDescription(_ milestones: [PaceMilestone]) -> String {
-        guard !milestones.isEmpty else { return "[]" }
-        return "[" + milestones.map(\.rawValue).joined(separator: ",") + "]"
-    }
-
-    private static func bucketDescription(_ bucket: PaceBucket) -> String {
-        switch bucket {
-        case .untracked: return "untracked"
-        case .healthy: return "healthy"
-        case .close: return "close"
-        case .runningOut: return "runningOut"
-        }
-    }
-
-    private static func notificationStateDescription(_ state: WidgetData.MeterState) -> String {
-        switch state {
-        case .noData: return "noData"
-        case .spent: return "spent"
-        case .runningOut: return "runningOut"
-        case .closeToLimit: return "closeToLimit"
-        case .healthy: return "healthy"
-        case .level(let severity):
-            switch severity {
-            case .normal: return "level.normal"
-            case .warning: return "level.warning"
-            case .critical: return "level.critical"
-            }
-        }
     }
 
     /// What a single provider's refresh actually did this pass, so `refreshAll` can summarize the batch
@@ -316,14 +212,19 @@ final class WidgetDataStore {
     enum RefreshOutcome: Sendable { case refreshed, failed, cacheHit, skipped, backedOff }
 
     @discardableResult
-    func refresh(providerID: String, force: Bool = false) async -> RefreshOutcome {
+    func refresh(
+        providerID: String,
+        force: Bool = false,
+        notifyHistoryChange: Bool = true
+    ) async -> RefreshOutcome {
         guard isProviderEnabled(providerID) else { return .skipped }
         if !force, let cached = cache.snapshot(providerID: providerID) {
             // Skip the no-op write: `@Observable` doesn't compare values, so unconditionally
             // re-assigning an unchanged snapshot would re-render the menu-bar label every pass.
             AppLog.debug(.refresh, "cache hit \(providerID)")
-            if snapshots[providerID] != cached {
-                snapshots[providerID] = cached
+            if localSnapshots[providerID] != cached {
+                localSnapshots[providerID] = cached
+                rebuildRenderedSnapshots()
             }
             return .cacheHit
         }
@@ -346,7 +247,7 @@ final class WidgetDataStore {
         refreshingProviderIDs.insert(providerID)
         defer { refreshingProviderIDs.remove(providerID) }
         let start = Date()
-        let snapshot = await provider.refresh()
+        var snapshot = await provider.refresh()
         let durationMs = Int(Date().timeIntervalSince(start) * 1000)
         if let message = Self.errorMessage(in: snapshot) {
             // Failed refresh: surface the error but keep the last good snapshot on screen rather than
@@ -363,8 +264,28 @@ final class WidgetDataStore {
         }
         // Recovered: drop any backoff so the provider resumes the normal cadence immediately.
         failureRetryAfter[providerID] = nil
-        snapshots[providerID] = snapshot
+        // A provider can refresh its live limits successfully while its optional local log/CSV scan
+        // produces no result. Keep only the last-good normalized history in that case; the new plan,
+        // limits, warnings, and timestamp still win. A non-nil empty history remains authoritative and
+        // clears the old rows, because it proves the scan completed and found no usage.
+        if snapshot.usageHistory == nil,
+           let history = localSnapshots[providerID]?.usageHistory,
+           let descriptor = registry.historyDescriptorsByProvider[providerID]
+        {
+            snapshot.usageHistory = history
+            snapshot = UsageHistorySnapshotRenderer.render(
+                local: snapshot,
+                history: history,
+                descriptor: descriptor,
+                now: now(),
+                combined: false
+            )
+            AppLog.debug(.refresh, "preserved last-good history for \(providerID) after scan miss")
+        }
+        localSnapshots[providerID] = snapshot
         cache.store(snapshot)
+        rebuildRenderedSnapshots()
+        if notifyHistoryChange { onLocalHistoryChanged?() }
         AppLog.info(.refresh, "\(providerID) ok (\(durationMs)ms)")
         onRefreshOutcome?(providerID, .refreshed, nil, force)
         return .refreshed
@@ -376,6 +297,80 @@ final class WidgetDataStore {
     /// retry until the 5-minute heartbeat). The periodic loop never calls this — only the user action does.
     func clearFailureBackoff(for providerID: String) {
         failureRetryAfter[providerID] = nil
+    }
+
+    /// Rebuild the in-memory union immediately after a provider toggle. Local cached data remains
+    /// available to direct API reads, but disabled providers stop receiving peer contributions.
+    func providerEnablementDidChange() {
+        rebuildRenderedSnapshots()
+    }
+
+    /// Replaces the downloaded peer set. A conflicted duplicate device file resolves to the newest
+    /// valid document, and this Mac's own downloaded copy is excluded in favor of current memory.
+    func setPeerHistoryDocuments(_ documents: [UsageHistoryDocument], ownDeviceID: String) {
+        peerHistoryDocuments = UsageHistoryDocument.newestByDevice(documents)
+            .filter { $0.deviceID != ownDeviceID }
+        rebuildRenderedSnapshots()
+    }
+
+    func clearPeerHistoryDocuments() {
+        guard !peerHistoryDocuments.isEmpty else { return }
+        peerHistoryDocuments = []
+        rebuildRenderedSnapshots()
+    }
+
+    func localHistoryDocument(deviceID: String, deviceName: String, updatedAt: Date = Date()) -> UsageHistoryDocument {
+        var providers: [String: ProviderUsageHistory] = [:]
+        for (providerID, descriptor) in registry.historyDescriptorsByProvider
+        where descriptor.scope == .machineLocal && isProviderEnabled(providerID) {
+            if let history = localSnapshots[providerID]?.usageHistory {
+                providers[providerID] = history
+            }
+        }
+        return UsageHistoryDocument(
+            deviceID: deviceID,
+            deviceName: deviceName,
+            updatedAt: updatedAt,
+            providers: providers
+        )
+    }
+
+    private func rebuildRenderedSnapshots() {
+        guard !peerHistoryDocuments.isEmpty else {
+            snapshots = localSnapshots
+            return
+        }
+        let renderDate = now()
+        let enabledDescriptors = registry.historyDescriptorsByProvider.reduce(
+            into: [String: UsageHistoryDescriptor]()
+        ) { result, entry in
+            if isProviderEnabled(entry.key) { result[entry.key] = entry.value }
+        }
+        let merged = UsageHistoryAggregator.merged(
+            localSnapshots: localSnapshots,
+            peerDocuments: peerHistoryDocuments,
+            descriptors: enabledDescriptors,
+            now: renderDate
+        )
+        var rendered = localSnapshots
+        for (providerID, history) in merged {
+            guard let descriptor = registry.historyDescriptorsByProvider[providerID],
+                  let provider = registry.provider(id: providerID)
+            else { continue }
+            let local = localSnapshots[providerID] ?? ProviderSnapshot(
+                providerID: providerID,
+                displayName: provider.displayName,
+                lines: [],
+                refreshedAt: peerHistoryDocuments.map(\.updatedAt).max() ?? renderDate
+            )
+            rendered[providerID] = UsageHistorySnapshotRenderer.render(
+                local: local,
+                history: history,
+                descriptor: descriptor,
+                now: renderDate
+            )
+        }
+        snapshots = rendered
     }
 
     /// The provider's latest refresh error, or `nil` when its last refresh succeeded.
@@ -409,17 +404,6 @@ final class WidgetDataStore {
     }
 
     func data(for descriptor: WidgetDescriptor) -> WidgetData {
-        if PlanWidget.isPlan(descriptor) {
-            var result = descriptor.sample
-            if let plan = plan(for: descriptor.providerID) {
-                result.valueTextOverride = plan
-                result.hasData = true
-            } else {
-                result.hasData = false
-            }
-            return result
-        }
-
         var result: WidgetData
         if let snapshot = snapshots[descriptor.providerID],
            let line = snapshot.line(label: descriptor.metricLabel),
@@ -432,18 +416,17 @@ final class WidgetDataStore {
             result.hasData = false
         }
 
-        // Single global choke point: tiles, the Add-Widget gallery, and the menu-bar value all funnel
-        // through here, so stamping the mode once makes them follow the global setting. Inert for
-        // unbounded tiles (limit == nil), whose displayed value ignores displayMode.
+        // Single global choke point: dashboard/share rows and menu-bar values all funnel through here,
+        // so stamping the mode once makes them follow the global setting. Inert for unbounded rows
+        // (limit == nil), whose displayed value ignores displayMode.
         result.displayMode = meterStyle
         result.resetDisplayMode = resetDisplayMode
         result.alwaysShowPacing = alwaysShowPacing
-        result.widgetID = descriptor.id
         return result
     }
 
-    /// The plan label for a provider's latest snapshot (also feeds the optional Plan widget). `nil` until a
-    /// snapshot exists or when the provider doesn't expose a plan.
+    /// The plan label for a provider's latest snapshot. `nil` until a snapshot exists or when the
+    /// provider doesn't expose a plan. Provider section headers render this beside the provider name.
     func plan(for providerID: String) -> String? {
         snapshots[providerID]?.plan
     }
@@ -471,23 +454,6 @@ final class WidgetDataStore {
         return StalenessHint(label: "Outdated", tooltip: "Last updated \(duration) ago")
     }
 
-    var menuBarPrimaryText: String {
-        // The tray mirrors the user's widget order: the first placed, enabled tile that has real data
-        // drives it, skipping any no-data tile so it never shows a missing metric's placeholder. When
-        // nothing has real data yet, it shows the no-data marker ("—") beside the tray icon — never a
-        // fabricated amount.
-        let primary = orderedDescriptors()
-            .filter { isProviderEnabled($0.providerID) }
-            .lazy
-            .map { self.data(for: $0) }
-            // A chart tile has data but no scalar value, so it would read "0" here — skip it, the same
-            // way the tray bars skip it (it's non-pinnable).
-            .first { $0.hasData && !$0.isChart }
-
-        guard let primary else { return WidgetData.noDataHeadline }
-        return primary.valueText
-    }
-
     private func resolve(_ line: MetricLine, descriptor: WidgetDescriptor) -> WidgetData? {
         switch line {
         case .progress(_, let used, let limit, let format, let resetsAt, let periodDurationMs, _):
@@ -499,7 +465,7 @@ final class WidgetDataStore {
             // meters keep their raw `used`: a dollar/count overage (used > limit) is real and is
             // conveyed by the meter's spent state rather than hidden.
             let normalizedUsed = format == .percent ? ProviderParse.clampPercent(used) : used
-            return WidgetData(
+            var result = WidgetData(
                 title: descriptor.sample.title,
                 icon: descriptor.sample.icon,
                 kind: format.metricKind,
@@ -507,21 +473,26 @@ final class WidgetDataStore {
                 limit: limit,
                 countSuffix: format.countSuffix,
                 valuePrefix: descriptor.sample.valuePrefix,
-                widgetID: descriptor.id,
                 resetsAt: resetsAt,
                 periodDurationMs: periodDurationMs,
                 limitNoun: descriptor.sample.limitNoun,
                 infoNote: descriptor.sample.infoNote
             )
-        case .text(_, let value, _, _):
-            return resolveText(value, descriptor: descriptor)
+            // Descriptor opt-in (session-window meters read "Not started" when unused); the fresh
+            // `.progress` result doesn't start from the sample, so carry the flag explicitly.
+            result.isSessionWindow = descriptor.sample.isSessionWindow
+            return result
+        case .text:
+            // Text lines carry provider notices for the local API; no dashboard descriptor consumes
+            // them. Numeric widgets use typed progress/values lines and must never parse display text.
+            return nil
         case .values(_, let values, _, let expiriesAt, let unknownModels, let modelBreakdown):
             // The number is carried raw — no regex re-parse. Presentation (title, icon, selection,
             // trailing word) comes from the descriptor's sample; the live numbers come from the line.
             var data = descriptor.sample
             data.values = values
             // A `.values` line is unbounded by definition (see `MetricLine`), so it never renders as a
-            // meter even when the descriptor's gallery sample carries a placeholder limit — e.g. Claude's
+            // meter even when the descriptor template carries a placeholder limit — e.g. Claude's
             // `claude.extra` is `boundedDollars` for its capped `.progress` case but feeds an uncapped
             // `.values` row when there's no monthly cap.
             data.limit = nil
@@ -549,7 +520,7 @@ final class WidgetDataStore {
         case .chart(_, let points, let note):
             // Presentation (title, icon) from the sample; the live per-day points from the line. No
             // points means the source was read but had no usable day — render "No data", not an empty
-            // axis (and so the sample's gallery bars never leak onto the dashboard).
+            // axis (and so descriptor template data never leaks onto the dashboard).
             var data = descriptor.sample
             data.isChart = true
             data.chartPoints = points
@@ -559,76 +530,4 @@ final class WidgetDataStore {
         }
     }
 
-    private func resolveText(_ value: String, descriptor: WidgetDescriptor) -> WidgetData? {
-        let sample = descriptor.sample
-        switch sample.kind {
-        case .dollars:
-            guard let amount = Self.firstCurrencyAmount(in: value) else { return sample }
-            // A raw-text descriptor shows the provider's line verbatim (the parsed amount above still
-            // feeds the menu bar's compact value); otherwise the value is reformatted from `used`.
-            return textData(sample, kind: .dollars, used: amount, limit: sample.limit,
-                            valueTextOverride: sample.preservesRawText ? value : nil,
-                            unboundedValueWord: sample.unboundedValueWord)
-        case .count:
-            guard let count = Self.firstNumber(in: value) else { return sample }
-            // A raw-text descriptor shows the provider's line verbatim (the parsed count above still
-            // feeds the menu bar's compact value); otherwise the value is reformatted from `used`.
-            return textData(sample, kind: .count, used: count, limit: sample.limit,
-                            valueTextOverride: sample.preservesRawText ? value : nil,
-                            unboundedValueWord: sample.unboundedValueWord)
-        case .percent:
-            guard let percent = Self.firstNumber(in: value) else { return sample }
-            // Percent rows are always 0–100, so a missing sample limit defaults to a full 100 scale,
-            // and they carry no `unboundedValueWord` (they're never an unbounded balance). `firstNumber`
-            // accepts a leading sign, so clamp the parsed value to the same 0...100 domain the
-            // `.progress` percent path guarantees, keeping a stray "-5%" out of every surface.
-            return textData(sample, kind: .percent, used: ProviderParse.clampPercent(percent), limit: sample.limit ?? 100)
-        }
-    }
-
-    /// Builds the resolved `WidgetData` for a `.text` line: the metric identity and presentation come
-    /// from the descriptor's `sample`, while the parsed `used` (and the per-kind `limit`,
-    /// `valueTextOverride`, `unboundedValueWord`) come from the live value. Fields the sample uses for
-    /// real metrics but a fresh text row must not inherit (display/reset mode, reset timing, period,
-    /// limit noun, raw-text flag, no-data flag) deliberately reset to their `WidgetData` defaults.
-    private func textData(
-        _ sample: WidgetData,
-        kind: MetricKind,
-        used: Double,
-        limit: Double?,
-        valueTextOverride: String? = nil,
-        unboundedValueWord: String? = nil
-    ) -> WidgetData {
-        WidgetData(
-            title: sample.title,
-            icon: sample.icon,
-            kind: kind,
-            used: used,
-            limit: limit,
-            countSuffix: sample.countSuffix,
-            valuePrefix: sample.valuePrefix,
-            valueTextOverride: valueTextOverride,
-            subtitleOverride: sample.subtitleOverride,
-            unboundedValueWord: unboundedValueWord,
-            infoNote: sample.infoNote
-        )
-    }
-
-    static func firstCurrencyAmount(in value: String) -> Double? {
-        let pattern = #"[-+]?\$([0-9][0-9,]*(?:\.[0-9]+)?)"#
-        guard let match = value.range(of: pattern, options: .regularExpression) else {
-            return nil
-        }
-        let matched = value[match].replacingOccurrences(of: "$", with: "")
-        return Double(matched.replacingOccurrences(of: ",", with: ""))
-    }
-
-    static func firstNumber(in value: String) -> Double? {
-        let pattern = #"[-+]?[0-9][0-9,]*(?:\.[0-9]+)?"#
-        guard let match = value.range(of: pattern, options: .regularExpression) else {
-            return nil
-        }
-        return Double(value[match].replacingOccurrences(of: ",", with: ""))
-    }
 }
-

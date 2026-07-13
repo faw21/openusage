@@ -27,22 +27,26 @@ final class DevinProvider: ProviderRuntime {
 
     var widgetDescriptors: [WidgetDescriptor] {
         [
-            .percent(id: "devin.daily", provider: provider, title: "Daily", metricLabel: "Daily quota"),
-            .percent(id: "devin.weekly", provider: provider, title: "Weekly", metricLabel: "Weekly quota"),
+            .percent(id: "devin.daily", provider: provider, title: "Daily", metricLabel: "Daily quota")
+                .exportingLimit("daily", unit: "percent"),
+            .percent(id: "devin.weekly", provider: provider, title: "Weekly", metricLabel: "Weekly quota")
+                .exportingLimit("weekly", unit: "percent"),
             .dollarBalance(id: "devin.extra", provider: provider, title: "Extra Balance", metricLabel: "Extra usage balance", valueWord: "left")
+                .exportingLimit("extraUsageBalance", kind: .balance, unit: "usd", source: .value(kind: .dollars))
         ]
     }
 
     func hasLocalCredentials() async -> Bool {
-        // Same sources as `refresh()`: the credentials file, then the Devin app's stored auth.
-        if authStore.loadCredentialsFile() != nil { return true }
+        // Same sources as `refresh()`: the credentials file, then the Devin app's stored auth. Both are
+        // blocking disk/SQLite reads, so both run off the main actor (see `loadOffMainActor`).
+        if await loadOffMainActor({ [authStore] in authStore.loadCredentialsFile() }) != nil { return true }
         return await loadOffMainActor { [authStore] in authStore.loadAppAuth() } != nil
     }
 
     func refresh() async -> ProviderSnapshot {
         var sawAPIKey = false
         var sawAuthFailure = false
-        let credentials = authStore.loadCredentialsFile()
+        let credentials = await loadOffMainActor { [authStore] in authStore.loadCredentialsFile() }
 
         if let credentials {
             sawAPIKey = true

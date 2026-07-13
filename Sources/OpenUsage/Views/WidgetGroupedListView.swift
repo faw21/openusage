@@ -54,15 +54,14 @@ struct WidgetGroupedListView: View {
             warning: dataStore.headerNotice(for: group.provider.id),
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
             staleness: dataStore.stalenessHint(for: group.provider.id),
-            showsDragHandle: true
+            onCopyScreenshot: { shareCard(group) }
         )
-        // 8pt (+ 4pt internal) on both sides: insets the drag grip off the card's left edge and
-        // lines the provider mark up with the card's right content edge.
+        // Keep the provider mark and hover-revealed copy control aligned with the card's content edges.
         .padding(.horizontal, 8)
         .highPriorityGesture(providerDragGesture(for: group))
         .contextMenu {
-            // Hides the whole provider section (Settings ▸ Providers brings it back). Mirrors the per-metric
-            // "Hide" but one level up, so the verb order reads the same on a header as on a row.
+            // Hides the whole provider section (the Customize provider list brings it back). Mirrors
+            // the per-metric "Hide" but one level up, so the verb order reads the same on a header as a row.
             Button("Hide \(group.provider.displayName)") {
                 container.enablement.setEnabled(false, for: group.provider.id)
             }
@@ -74,7 +73,7 @@ struct WidgetGroupedListView: View {
                 openCustomize(for: group.provider.id)
             }
             Divider()
-            Button("Share Screenshot") { shareCard(group) }
+            Button("Share Screenshot") { _ = shareCard(group) }
         }
     }
 
@@ -84,7 +83,7 @@ struct WidgetGroupedListView: View {
     /// the export matches the card on screen instead of guessing from `NSApp.effectiveAppearance`. The
     /// same render path backs the footer's "Share Screenshot" submenu, which reaches it without a
     /// right-click.
-    private func shareCard(_ group: ProviderGroup) {
+    private func shareCard(_ group: ProviderGroup) -> Bool {
         ShareCardRenderer.share(
             group: group,
             dataStore: dataStore,
@@ -131,7 +130,7 @@ struct WidgetGroupedListView: View {
         let isExpanded = layout.isProviderExpanded(providerID)
         let alwaysRows = resolvedRows(group.alwaysShownWidgets)
         let expandedRows = resolvedRows(group.expandedWidgets)
-        // The caret is a boundary between primary and expanded rows, so text-row condensing should not
+        // The caret separates Always Visible and On Demand rows, so text-row condensing should not
         // bridge across it. Each side tightens only against rows on the same side of the separator.
         let condensedIDs = visibleCondensedTextRowIDs(alwaysRows: alwaysRows, expandedRows: isExpanded ? expandedRows : [])
         let cardRows = metricCardRows(
@@ -186,8 +185,8 @@ struct WidgetGroupedListView: View {
             + (isExpanded && hasLinks ? [.links(links)] : [])
     }
 
-    /// The centered caret at the bottom of a provider card that reveals or hides its "Shown on expand"
-    /// metrics. Only rendered for providers that actually have expanded metrics.
+    /// The centered caret at the bottom of a provider card that reveals or hides its On Demand metrics
+    /// and quick links. Rendered whenever the provider has either kind of expanded content.
     private func expandToggle(providerID: String, isExpanded: Bool) -> some View {
         Button {
             withAnimation(Motion.spring) {
@@ -216,16 +215,14 @@ struct WidgetGroupedListView: View {
         condensedTextRowIDs(alwaysRows).union(condensedTextRowIDs(expandedRows))
     }
 
-    /// Neighbor-aware rule: IDs of text-only rows sitting directly under another text-only row.
-    /// Rows can't see their neighbors, so the list computes the pairs; Compact density pulls these
-    /// rows up so a run of one-liners reads as one cluster.
+    /// Neighbor-aware rule (shared with the share-card export via `WidgetData.condensedTextRowOffsets`):
+    /// IDs of text-only rows sitting directly under another text-only row. Rows can't see their
+    /// neighbors, so the list computes the pairs; Compact density pulls these rows up so a run of
+    /// one-liners reads as one cluster. Called per segment (always-shown / expanded), so the expand
+    /// caret is never crossed.
     private func condensedTextRowIDs(_ rows: [ResolvedRow]) -> Set<String> {
-        var ids = Set<String>()
-        for (previous, current) in zip(rows, rows.dropFirst())
-        where !previous.data.isBounded && !current.data.isBounded {
-            ids.insert(current.descriptor.id)
-        }
-        return ids
+        let offsets = WidgetData.condensedTextRowOffsets(in: rows.map(\.data))
+        return Set(offsets.map { rows[$0].descriptor.id })
     }
 
     private func row(_ descriptor: WidgetDescriptor, data: WidgetData, in providerID: String,

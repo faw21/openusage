@@ -29,9 +29,11 @@ final class OpenRouterProvider: ProviderRuntime {
     var widgetDescriptors: [WidgetDescriptor] {
         [
             .boundedDollars(id: "openrouter.credits", provider: provider, title: "Credits",
-                            metricLabel: "Credits", limit: 100, limitNoun: "purchased"),
+                            metricLabel: "Credits", limit: 100, limitNoun: "purchased")
+                .exportingLimit("credits", unit: "usd"),
             .dollarBalance(id: "openrouter.balance", provider: provider, title: "Balance",
-                           metricLabel: "Balance", valueWord: "left"),
+                           metricLabel: "Balance", valueWord: "left")
+                .exportingLimit("balance", kind: .balance, unit: "usd", source: .value(kind: .dollars)),
             .values(id: "openrouter.today", provider: provider, title: "Today",
                     metricLabel: "Today", selection: .kind(.dollars), isUsagePeriod: true),
             .values(id: "openrouter.week", provider: provider, title: "This Week",
@@ -40,6 +42,7 @@ final class OpenRouterProvider: ProviderRuntime {
                     metricLabel: "This Month", selection: .kind(.dollars), isUsagePeriod: true),
             .boundedDollars(id: "openrouter.keyLimit", provider: provider, title: "Key Limit",
                             metricLabel: "Key Limit", limit: 100, valueWord: "spent")
+                .exportingLimit("keyLimit", unit: "usd")
         ]
     }
 
@@ -108,10 +111,6 @@ extension OpenRouterProvider: APIKeyManaging {
     func currentAPIKey() -> String? { authStore.currentAPIKey() }
     func saveAPIKey(_ key: String) throws { try authStore.saveAPIKey(key) }
     func deleteAPIKey() throws { try authStore.deleteAPIKey() }
-    /// Where the in-app editor writes — the primary config file the auth store reads first.
-    var apiKeyStorageDescription: String { OpenRouterAuthStore.configPaths[0] }
-    /// The env var shown in the "Using OPENROUTER_API_KEY from your environment" line.
-    var apiKeyEnvironmentName: String { OpenRouterAuthStore.environmentNames[0] }
 }
 
 private enum EndpointResult {

@@ -2,10 +2,14 @@
 
 ## When data updates
 
-- All enabled providers refresh together: at launch, then every 5 minutes (a fixed cadence — there's no setting for it). Providers fetch in parallel — one slow provider doesn't delay the others.
+- All enabled providers refresh together: once at launch, then every 5 minutes (a fixed cadence — there's no setting for it). Opening the popover does not start a second automatic pass. Providers fetch in parallel — one slow provider doesn't delay the others.
 - Turning a provider on (yourself in Customize, or automatically by first-launch/new-provider detection) fetches it promptly instead of waiting out the interval — even when the change lands in the middle of a refresh that's already running.
-- The popover footer shows `Next update in Nm`. **Clicking it (or ⌘R)** refreshes immediately, skipping the cache.
+- The Dashboard and Settings footer shows `Next update in Nm`. **Clicking it (or pressing ⌘R while that footer is present)** refreshes immediately, skipping the cache.
+- The one-shot `openusage` command reuses this same persisted cache for five minutes, refreshes missing or stale entries without starting the app, and exits. `openusage --force` runs the same forced provider refresh as ⌘R regardless of cache age.
 - While a provider is fetching, a small spinner appears next to its name (and one shows in the footer beside the countdown), so you can tell a refresh is in flight rather than wondering if the numbers are stale.
+- With [iCloud Sync](icloud-sync.md) on, a refresh batch writes one machine-history file after the whole
+  batch finishes. Manual provider refreshes write after that provider finishes, and adjacent changes are
+  debounced into one write.
 
 ## Caching
 
@@ -20,6 +24,10 @@ fetches providers itself. See [macOS widgets](macos-widgets.md).
 ## When a fetch fails
 
 A failed refresh **never wipes your data**: the last good values stay on screen, and a small warning triangle appears next to the provider's name — hover it for the error message (e.g. "Not logged in"). The error clears on the next successful refresh.
+
+The last good normalized history is preserved too, so a temporary provider failure—or a successful
+limit refresh whose local log scan is temporarily unavailable—does not remove this Mac's previous
+contribution from an iCloud-combined spend total.
 
 Rows that have never had data show "No data" rather than made-up numbers.
 
