@@ -19,9 +19,11 @@ struct WidgetBridgeExporter {
     }
 
     private func makeProvider(_ provider: Provider, generatedAt: Date) -> WidgetProviderRecord {
-        let descriptors = layout.orderedSupportedMetrics(for: provider.id).filter {
-            layout.isMetricEnabled($0.id) && !dataStore.data(for: $0).isChart
-        }
+        let descriptors = Self.enabledMetricDescriptors(
+            for: provider.id,
+            layout: layout,
+            dataStore: dataStore
+        )
         let primary = descriptors.filter { !layout.isMetricExpanded($0.id) }
         let secondary = descriptors.filter { layout.isMetricExpanded($0.id) }
         let snapshot = dataStore.snapshots[provider.id]
@@ -51,6 +53,19 @@ struct WidgetBridgeExporter {
             primaryMetrics: primary.compactMap { records[$0.id] },
             secondaryMetrics: secondary.compactMap { records[$0.id] }
         )
+    }
+
+    /// Enabled rows the WidgetKit extension can actually render. Keep this as the single predicate
+    /// for export and deep-link routing so a chart-only provider opens Customize instead of a
+    /// dashboard card that cannot explain the widget's "No Data" state.
+    static func enabledMetricDescriptors(
+        for providerID: String,
+        layout: LayoutStore,
+        dataStore: WidgetDataStore
+    ) -> [WidgetDescriptor] {
+        layout.orderedSupportedMetrics(for: providerID).filter {
+            layout.isMetricEnabled($0.id) && !dataStore.data(for: $0).isChart
+        }
     }
 
     private func makeMetric(_ descriptor: WidgetDescriptor, generatedAt: Date) -> WidgetMetricRecord {

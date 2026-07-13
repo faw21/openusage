@@ -14,8 +14,9 @@ The widget follows the provider's enabled metrics and saved order in OpenUsage. 
 on the metrics shown above the provider's expand caret; large widgets can also include metrics marked
 "Shown on expand." Usage Trend charts stay in the popover.
 
-Clicking a widget opens the OpenUsage popover at that provider. If the provider is off or has no visible
-metrics, it opens the provider's Customize screen instead.
+Clicking a widget opens the OpenUsage popover at that provider. If the provider is off or has no enabled
+widget-compatible metrics (for example, only Usage Trend remains), it opens the provider's Customize
+screen instead.
 
 ## Updates and stale data
 

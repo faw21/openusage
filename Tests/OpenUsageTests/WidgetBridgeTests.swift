@@ -106,6 +106,33 @@ final class WidgetBridgeExporterTests: XCTestCase {
         XCTAssertFalse(provider.isEnabled)
         XCTAssertEqual(provider.health, .noData)
     }
+
+    func testConfiguredMetricAvailabilityExcludesChartsButIncludesEmptyRenderableRows() {
+        let fixture = Fixture()
+
+        fixture.layout.setMetricEnabled("test.session", false)
+        fixture.layout.setMetricEnabled("test.balance", false)
+        XCTAssertTrue(fixture.layout.isMetricEnabled("test.trend"))
+        XCTAssertTrue(
+            WidgetBridgeExporter.enabledMetricDescriptors(
+                for: fixture.provider.id,
+                layout: fixture.layout,
+                dataStore: fixture.dataStore
+            ).isEmpty,
+            "a chart-only provider must route its No Data widget to Customize"
+        )
+
+        fixture.layout.setMetricEnabled("test.balance", true)
+        XCTAssertEqual(
+            WidgetBridgeExporter.enabledMetricDescriptors(
+                for: fixture.provider.id,
+                layout: fixture.layout,
+                dataStore: fixture.dataStore
+            ).map(\.id),
+            ["test.balance"],
+            "an enabled non-chart row remains dashboard-routable before it has refreshed data"
+        )
+    }
 }
 
 @MainActor

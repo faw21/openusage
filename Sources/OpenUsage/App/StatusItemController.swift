@@ -320,7 +320,11 @@ final class StatusItemController: NSObject {
         }
 
         let providerID = deepLink.providerID
-        let hasVisibleMetrics = container.layout.displayGroups.contains { $0.provider.id == providerID }
+        let hasVisibleMetrics = !WidgetBridgeExporter.enabledMetricDescriptors(
+            for: providerID,
+            layout: container.layout,
+            dataStore: container.dataStore
+        ).isEmpty
         let destination = ProviderDeepLinkDestination.resolve(
             isEnabled: container.enablement.isEnabled(providerID),
             hasVisibleMetrics: hasVisibleMetrics
