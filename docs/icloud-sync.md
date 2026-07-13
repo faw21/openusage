@@ -20,10 +20,10 @@ This Mac updates its file after a five-minute refresh batch, a manual refresh, o
 change. iCloud delivery is eventually consistent, so another Mac can take longer than five minutes to
 receive it, especially while offline. Downloaded changes reload immediately when macOS reports them.
 
-Settings lists each valid device file with the time that Mac generated it. **Remove** deletes another
-Mac's file, although that Mac can create it again on its next update while sync remains enabled there.
-Turning sync off deletes this Mac's file, stops reading peers, and immediately returns every surface to
-local-only spend. Malformed files are ignored and reported in Settings and the app log.
+Settings lists each valid device file with the time that Mac generated it. To remove a Mac from the
+combined summary, turn sync off on that Mac; this deletes its file from iCloud. Turning sync off also
+stops that Mac from reading peers and immediately returns every surface there to local-only spend.
+Malformed files are ignored and reported in Settings and the app log.
 
 ## Development and release setup
 

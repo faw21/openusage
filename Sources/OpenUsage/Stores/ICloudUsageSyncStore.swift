@@ -197,20 +197,6 @@ final class ICloudUsageSyncStore {
         }
     }
 
-    func remove(_ document: UsageHistoryDocument) {
-        guard document.deviceID != deviceID else { return }
-        Task {
-            await withSyncActivity {
-                do {
-                    try await fileStore.delete(deviceID: document.deviceID)
-                    await reload()
-                } catch {
-                    report(error, context: "remove")
-                }
-            }
-        }
-    }
-
     private func applyEnabledChange() async {
         if enabled {
             startObserving()
