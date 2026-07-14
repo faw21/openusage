@@ -160,6 +160,51 @@ final class ModelPricingTests: XCTestCase {
         XCTAssertEqual(merged.outputAbove200kPerMillion, 45)
     }
 
+    func testCachedSupplementFillsEachMissingLongContextRateIndependently() throws {
+        let bundled = try PricingSupplement.decode(from: Data(#"""
+        {
+          "pricing": {
+            "gpt-test": {
+              "input_per_million": 5,
+              "output_per_million": 30,
+              "cache_write_per_million": 6.25,
+              "cache_read_per_million": 0.5,
+              "long_context_threshold_tokens": 272000,
+              "input_long_context_per_million": 10,
+              "output_long_context_per_million": 45,
+              "cache_write_long_context_per_million": 12.5,
+              "cache_read_long_context_per_million": 1
+            }
+          },
+          "alias_rules": []
+        }
+        """#.utf8))
+        let partialOverlay = try PricingSupplement.decode(from: Data(#"""
+        {
+          "pricing": {
+            "gpt-test": {
+              "input_per_million": 6,
+              "output_per_million": 31,
+              "cache_write_per_million": 7.5,
+              "cache_read_per_million": 0.6,
+              "long_context_threshold_tokens": 300000,
+              "input_long_context_per_million": 11
+            }
+          },
+          "alias_rules": []
+        }
+        """#.utf8))
+
+        let merged = try XCTUnwrap(bundled.merging(partialOverlay).pricing["gpt-test"])
+        XCTAssertEqual(merged.inputPerMillion, 6)
+        XCTAssertEqual(merged.outputPerMillion, 31)
+        XCTAssertEqual(merged.longContextThresholdTokens, 300_000)
+        XCTAssertEqual(merged.inputAbove200kPerMillion, 11)
+        XCTAssertEqual(merged.outputAbove200kPerMillion, 45)
+        XCTAssertEqual(merged.cacheWriteAbove200kPerMillion, 12.5)
+        XCTAssertEqual(merged.cacheReadAbove200kPerMillion, 1)
+    }
+
     func testAliasRuleRewritesSlug() throws {
         let supplement = """
         {"pricing": {}, "alias_rules": [

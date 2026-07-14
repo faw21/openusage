@@ -92,18 +92,21 @@ struct PricingSupplement: Sendable {
 private extension ModelRates {
     func fillingMissingLongContext(from fallback: ModelRates?) -> ModelRates {
         guard let fallback else { return self }
-        let hasLongContextRates = inputAbove200kPerMillion != nil
+        let hasAnyLongContextRate = inputAbove200kPerMillion != nil
             || outputAbove200kPerMillion != nil
             || cacheWriteAbove200kPerMillion != nil
             || cacheReadAbove200kPerMillion != nil
-        guard !hasLongContextRates else { return self }
 
         var result = self
-        result.longContextThresholdTokens = fallback.longContextThresholdTokens
-        result.inputAbove200kPerMillion = fallback.inputAbove200kPerMillion
-        result.outputAbove200kPerMillion = fallback.outputAbove200kPerMillion
-        result.cacheWriteAbove200kPerMillion = fallback.cacheWriteAbove200kPerMillion
-        result.cacheReadAbove200kPerMillion = fallback.cacheReadAbove200kPerMillion
+        // A legacy overlay with no tier metadata inherits the bundled threshold. A newer partial
+        // overlay keeps its declared threshold while each omitted bucket inherits independently.
+        if !hasAnyLongContextRate {
+            result.longContextThresholdTokens = fallback.longContextThresholdTokens
+        }
+        result.inputAbove200kPerMillion = inputAbove200kPerMillion ?? fallback.inputAbove200kPerMillion
+        result.outputAbove200kPerMillion = outputAbove200kPerMillion ?? fallback.outputAbove200kPerMillion
+        result.cacheWriteAbove200kPerMillion = cacheWriteAbove200kPerMillion ?? fallback.cacheWriteAbove200kPerMillion
+        result.cacheReadAbove200kPerMillion = cacheReadAbove200kPerMillion ?? fallback.cacheReadAbove200kPerMillion
         return result
     }
 }

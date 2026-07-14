@@ -467,7 +467,7 @@ final class OpenCodeUsageScannerTests: XCTestCase {
     }
 
     func testDataSQLDoesNotFilterExternalProviderIDs() {
-        let sql = OpenCodeUsageScanner.dataSQL(cutoffMs: 123)
+        let sql = OpenCodeUsageDatabaseReader.dataSQL(cutoffMs: 123)
         XCTAssertFalse(sql.contains("providerID') IN"))
         XCTAssertTrue(sql.contains("$.tokens.cache.read"))
         XCTAssertTrue(sql.contains("$.tokens.reasoning"))
