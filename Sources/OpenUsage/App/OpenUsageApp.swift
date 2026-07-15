@@ -4,6 +4,7 @@ import AppKit
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var container: AppContainer?
     private var statusItemController: StatusItemController?
+    private var desktopWidget: DesktopWidgetWindowController?
     private var singleInstanceLock: SingleInstanceLock.Token?
     private let updater = UpdaterController()
 
@@ -70,15 +71,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         AppearanceSetting.applyCurrent()
         let container = AppContainer(isFreshInstall: isFreshInstall)
         self.container = container
-        statusItemController = StatusItemController(container: container, updater: updater)
+        let statusItemController = StatusItemController(container: container, updater: updater)
+        self.statusItemController = statusItemController
+        // The desktop widget is the primary surface: a movable panel showing coding usage + API
+        // balances. Shown on launch; re-openable from the status item's right-click menu.
+        let desktopWidget = DesktopWidgetWindowController(container: container)
+        self.desktopWidget = desktopWidget
+        statusItemController.onShowDesktopWidget = { [weak desktopWidget] in desktopWidget?.show() }
+        desktopWidget.show()
         // Starts background update checks (release build only; dormant under preview/`swift run`).
         updater.start()
-    }
-
-    /// Flush queued telemetry on quit. The SDK's lifecycle autocapture is off (we emit our own daily
-    /// rollups), so it won't auto-flush on termination — this explicit flush keeps low-frequency events
-    /// from being stranded across a clean quit.
-    public func applicationWillTerminate(_ notification: Notification) {
-        container?.telemetry.flush()
     }
 }
