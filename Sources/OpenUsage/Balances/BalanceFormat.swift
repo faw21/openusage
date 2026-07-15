@@ -17,6 +17,17 @@ enum BalanceFormat {
         return String(format: "%.2f GB", value)
     }
 
+    /// Human bandwidth string in BINARY units (÷1024), matching how Webshare's dashboard renders it — it
+    /// labels TiB/GiB as "TB"/"GB", so a decimal ÷1000 conversion reads ~10% high and looks like the
+    /// projection instead of actual usage.
+    static func bandwidth(bytes: Double) -> String {
+        let tib = bytes / 1_099_511_627_776   // 1024^4
+        if tib >= 1 { return String(format: "%.2f TB", tib) }
+        let gib = bytes / 1_073_741_824        // 1024^3
+        if gib >= 10 { return String(format: "%.0f GB", gib) }
+        return String(format: "%.1f GB", gib)
+    }
+
     /// Parse an ISO / Webshare date string and render "Jul 30". Falls back to the raw string on failure.
     static func day(_ raw: String) -> String {
         guard let date = parseDate(raw) else { return raw }
@@ -47,7 +58,14 @@ enum BalanceFormat {
         Int(startOfMonth(now: now).timeIntervalSince1970)
     }
 
-    static func startOfMonthISO(now: Date = Date()) -> String { isoString(startOfMonth(now: now)) }
+    /// First of the (local) current month pinned to 00:00:00 **UTC**, e.g. "2026-07-01T00:00:00Z".
+    /// Aligned to a UTC day boundary because the cost APIs bucket by UTC days: a local-midnight instant
+    /// converted to UTC lands mid-day for any timezone west of UTC and silently drops the first day's
+    /// bucket (observed as a month total short by exactly day 1).
+    static func startOfMonthISO(now: Date = Date()) -> String {
+        let components = Calendar.current.dateComponents([.year, .month], from: now)
+        return String(format: "%04d-%02d-01T00:00:00Z", components.year ?? 0, components.month ?? 1)
+    }
     static func nowISO(now: Date = Date()) -> String { isoString(now) }
 
     private static func startOfMonth(now: Date) -> Date {

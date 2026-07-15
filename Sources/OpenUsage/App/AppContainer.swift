@@ -21,8 +21,8 @@ final class AppContainer {
     /// Quota pace notification preferences (three independent triggers). Drives the Settings section
     /// and is read by `WidgetDataStore.evaluateNotifications`.
     let notificationSettings: NotificationSettingsStore
-    /// Live balance/billing cards for the desktop widget (OpenRouter/OpenAI/Anthropic/Perplexity/GCP/
-    /// Webshare), each fanned out on its own cadence. Consumed by `DesktopDashboardView`.
+    /// Live balance/billing cards (OpenRouter/OpenAI/Anthropic/Perplexity/GCP/Webshare), each fanned out
+    /// on its own cadence. Rendered as the popover's "API Balances & Billing" section (`DashboardContentView`).
     let balances: BalanceStore
     /// Source of truth for the popover's transparency: the persisted Increase Transparency toggle, the
     /// ephemeral secret-code easter-egg state, and the system accessibility flags it yields to. Read by both

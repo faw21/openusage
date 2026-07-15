@@ -34,6 +34,7 @@ struct DashboardContentView: View {
                         .transition(.scale(scale: 0.95).combined(with: .opacity))
                 }
                 widgetContent
+                balancesSection
             }
             .animation(Motion.spring, value: container.onboarding.isCustomizeHintPending)
             .animation(Motion.spring, value: updater.availableUpdateVersion)
@@ -66,6 +67,32 @@ struct DashboardContentView: View {
                 reorderSpaceName: reorderSpaceName,
                 reorderLift: $reorderLift
             )
+        }
+    }
+
+    /// API balances & billing, appended below the provider list in the same scroll content (so it rides
+    /// the popover's auto-fit height + scroll and dismisses with it). Two-up grid to stay compact in the
+    /// narrow popover. Hidden until the balance store has cards.
+    @ViewBuilder
+    private var balancesSection: some View {
+        let cards = container.balances.cards
+        if !cards.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("API BALANCES & BILLING")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                    spacing: 8
+                ) {
+                    ForEach(cards) { card in
+                        BalanceCardView(card: card)
+                    }
+                }
+            }
+            .padding(.top, density.sectionSpacing)
         }
     }
 }

@@ -8,7 +8,7 @@ struct BalanceCardView: View {
     // @MainActor function type: callers pass MainActor-isolated View methods (e.g.
     // DesktopDashboardView.revealConfigFolder); a non-isolated `(() -> Void)?` can't store those in
     // Swift 6 mode, and the solver surfaces that as "ambiguous use of 'init'" at the enclosing view.
-    var onAddKey: (@MainActor () -> Void)?
+    var onAddKey: (@MainActor () -> Void)? = nil
 
     private var accent: Color { Color(hexString: card.accentHex) }
 

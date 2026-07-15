@@ -4,7 +4,6 @@ import AppKit
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var container: AppContainer?
     private var statusItemController: StatusItemController?
-    private var desktopWidget: DesktopWidgetWindowController?
     private var singleInstanceLock: SingleInstanceLock.Token?
     private let updater = UpdaterController()
 
@@ -71,14 +70,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         AppearanceSetting.applyCurrent()
         let container = AppContainer(isFreshInstall: isFreshInstall)
         self.container = container
-        let statusItemController = StatusItemController(container: container, updater: updater)
-        self.statusItemController = statusItemController
-        // The desktop widget is the primary surface: a movable panel showing coding usage + API
-        // balances. Shown on launch; re-openable from the status item's right-click menu.
-        let desktopWidget = DesktopWidgetWindowController(container: container)
-        self.desktopWidget = desktopWidget
-        statusItemController.onShowDesktopWidget = { [weak desktopWidget] in desktopWidget?.show() }
-        desktopWidget.show()
+        statusItemController = StatusItemController(container: container, updater: updater)
         // Starts background update checks (release build only; dormant under preview/`swift run`).
         updater.start()
     }

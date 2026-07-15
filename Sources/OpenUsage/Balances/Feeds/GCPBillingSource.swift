@@ -11,7 +11,8 @@ struct GCPBillingSource: BalanceSource {
     let iconSystemName = "cloud"
     let accentHex = "#4285F4"
     let link = URL(string: "https://console.cloud.google.com/billing")
-    var refreshInterval: TimeInterval { 6 * 3600 }
+    var refreshInterval: TimeInterval { 3 * 3600 }
+    var refreshesOnManual: Bool { false }
 
     var runner: ProcessRunning = SystemProcessRunner()
 

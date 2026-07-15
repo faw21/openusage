@@ -1,8 +1,10 @@
 import Foundation
 
-/// Webshare proxy bandwidth: used vs. plan limit and the cycle reset date. Three v2 REST calls with a
-/// static `Authorization: Token <key>` header (no OAuth). Key from ~/.config/openusage/webshare.json.
-/// `bandwidth_limit` is in GB; `bandwidth_total` is in bytes — converted before comparing.
+/// Webshare proxy bandwidth: ACTUAL bytes used this cycle + the reset date. `bandwidth_total` from the
+/// stats aggregate is the actual usage (not the `bandwidth_projected` estimate). Webshare's dashboard
+/// renders bytes in BINARY units (it labels TiB/GiB "TB"/"GB"), so we match with `BalanceFormat.bandwidth`
+/// (÷1024) — a decimal ÷1000 conversion reads ~10% high and looks like the projection. The active plan's
+/// `bandwidth_limit` (GB; 0 == unlimited) lives in /subscription/plan/'s results list.
 struct WebshareSource: BalanceSource {
     let id = "webshare"
     let title = "Webshare"
@@ -18,17 +20,22 @@ struct WebshareSource: BalanceSource {
             return card(.needsKey, detail: "Add your Webshare API key")
         }
         do {
-            let plan = try await get(endpoint("subscription/plan/"), key)
-            if plan.statusCode == 401 { return card(.failed("Invalid key")) }
-            guard plan.statusCode == 200 else { return card(.failed("HTTP \(plan.statusCode)")) }
-            let planData = try? JSONDecoder().decode(Plan.self, from: plan.body)
-            let limitGB = planData?.bandwidth_limit ?? 0   // GB; 0 == unlimited
-
-            let subscription = try? await get(endpoint("subscription/"), key)
-            let subscriptionData = subscription.flatMap { try? JSONDecoder().decode(Subscription.self, from: $0.body) }
+            let subscription = try await get(endpoint("subscription/"), key)
+            if subscription.statusCode == 401 { return card(.failed("Invalid key")) }
+            guard subscription.statusCode == 200 else { return card(.failed("HTTP \(subscription.statusCode)")) }
+            let subscriptionData = try? JSONDecoder().decode(Subscription.self, from: subscription.body)
             let startISO = subscriptionData?.start_date
             let resetDate = subscriptionData?.end_date
 
+            // Active plan's bandwidth limit (GB); 0 == unlimited.
+            var limitGB: Double = 0
+            if let plans = try? await get(endpoint("subscription/plan/"), key), plans.statusCode == 200,
+               let planList = try? JSONDecoder().decode(PlanList.self, from: plans.body),
+               let active = planList.results.first(where: { $0.status == "active" }) ?? planList.results.first {
+                limitGB = active.bandwidth_limit ?? 0
+            }
+
+            // Actual bytes used this cycle (bandwidth_total, not bandwidth_projected).
             var usedBytes: Double = 0
             if let startISO {
                 var components = URLComponents(string: "https://proxy.webshare.io/api/v2/stats/aggregate/")!
@@ -40,17 +47,17 @@ struct WebshareSource: BalanceSource {
                 }
             }
 
-            let usedGB = usedBytes / 1_000_000_000
-            let progress = limitGB > 0 ? min(1, usedGB / limitGB) : nil
-            let primary = limitGB > 0
-                ? "\(BalanceFormat.gb(usedGB)) / \(BalanceFormat.gb(limitGB))"
-                : BalanceFormat.gb(usedGB)
-            let secondary = limitGB > 0
-                ? "\(Int(((progress ?? 0) * 100).rounded()))% of plan bandwidth"
-                : "Unlimited plan"
+            let used = BalanceFormat.bandwidth(bytes: usedBytes)
             let detail = resetDate.map { "Resets \(BalanceFormat.day($0))" }
-            return card(.ok, primary: primary, secondary: secondary, detail: detail,
-                        progress: progress, updatedAt: Date())
+            if limitGB > 0 {
+                let limitBytes = limitGB * 1_073_741_824   // treat the plan's GB as GiB to match the dashboard
+                let progress = min(1, usedBytes / limitBytes)
+                return card(.ok,
+                            primary: "\(used) / \(BalanceFormat.bandwidth(bytes: limitBytes))",
+                            secondary: "\(Int((progress * 100).rounded()))% of plan bandwidth",
+                            detail: detail, progress: progress, updatedAt: Date())
+            }
+            return card(.ok, primary: used, secondary: "Unlimited plan", detail: detail, updatedAt: Date())
         } catch {
             return card(.failed("Couldn't reach Webshare"))
         }
@@ -66,7 +73,11 @@ struct WebshareSource: BalanceSource {
             headers: ["Authorization": "Token \(key)", "Accept": "application/json"], timeout: 15))
     }
 
-    private struct Plan: Decodable { let bandwidth_limit: Double? }
+    private struct PlanList: Decodable { let results: [PlanEntry] }
+    private struct PlanEntry: Decodable {
+        let status: String?
+        let bandwidth_limit: Double?
+    }
     private struct Subscription: Decodable {
         let start_date: String?
         let end_date: String?

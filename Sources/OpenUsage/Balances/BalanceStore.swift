@@ -24,10 +24,11 @@ final class BalanceStore {
     }
 
     /// Reload the sources whose per-source interval has elapsed (all of them when `force`).
-    func refreshDue(force: Bool = false) async {
+    func refreshDue(manual: Bool = false) async {
         let now = Date()
         let due = sources.filter { source in
-            force || now.timeIntervalSince(lastLoaded[source.id] ?? .distantPast) >= source.refreshInterval
+            if manual && source.refreshesOnManual { return true }
+            return now.timeIntervalSince(lastLoaded[source.id] ?? .distantPast) >= source.refreshInterval
         }
         guard !due.isEmpty else { return }
         isRefreshing = true
@@ -48,7 +49,7 @@ final class BalanceStore {
     }
 
     /// Force-reload everything — the widget's manual refresh button.
-    func refreshAll() async { await refreshDue(force: true) }
+    func refreshAll() async { await refreshDue(manual: true) }
 
     /// Reload a single source now (e.g. right after the user saves its key).
     func refresh(id: String) async {

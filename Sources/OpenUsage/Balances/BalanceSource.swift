@@ -12,6 +12,9 @@ protocol BalanceSource: Sendable {
     /// How often `BalanceStore` should reload this source. Fast providers use the default few minutes;
     /// GCP overrides to hours because billing data barely moves (and to keep BigQuery reads trivial).
     var refreshInterval: TimeInterval { get }
+    /// Whether the widget's manual refresh button reloads this source. GCP opts out — its data barely
+    /// moves and each reload spawns a `bq` subprocess — so it refreshes only on its own timer.
+    var refreshesOnManual: Bool { get }
 
     /// Never throws — a source maps every failure onto a `BalanceCard` state so one bad provider can't
     /// take down the whole row. Runs off the main actor.
@@ -21,6 +24,7 @@ protocol BalanceSource: Sendable {
 extension BalanceSource {
     var link: URL? { nil }
     var refreshInterval: TimeInterval { 300 }
+    var refreshesOnManual: Bool { true }
 
     /// Build a card pre-filled with this source's identity, so each source body stays about the data.
     func card(

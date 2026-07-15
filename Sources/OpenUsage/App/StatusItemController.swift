@@ -26,8 +26,6 @@ final class MenuBarPanel: NSPanel {
 @MainActor
 final class StatusItemController: NSObject {
     private let container: AppContainer
-    /// Re-open the desktop widget from the status item's right-click menu (wired by `AppDelegate`).
-    var onShowDesktopWidget: (() -> Void)?
     private let statusItem: NSStatusItem
     /// Owns the menu-bar strip render loop. Its apply closure captures the `NSStatusItem` directly
     /// (which never retains the controller), so this can be a plain non-optional `let`.
@@ -258,10 +256,6 @@ final class StatusItemController: NSObject {
         if panel.isVisible { hidePanel() }
 
         let menu = NSMenu()
-        menu.addItem(ClosureMenuItem(title: "Show Desktop Widget", systemSymbol: "rectangle.on.rectangle", keyEquivalent: "") { [weak self] in
-            self?.onShowDesktopWidget?()
-        })
-        menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "Settings", systemSymbol: "gearshape", keyEquivalent: ",") { [weak self] in
             self?.openSettings()
         })
