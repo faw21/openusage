@@ -30,7 +30,7 @@ struct BalanceCardView: View {
                 .foregroundStyle(accent)
                 .frame(width: 24, height: 24)
                 .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            Text(card.title).font(.system(size: 13, weight: .semibold))
+            Text(card.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
             Spacer()
             if let link = card.link {
                 Link(destination: link) {
