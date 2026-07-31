@@ -43,6 +43,7 @@ struct SettingsScreen: View {
         @Bindable var layout = container.layout
         @Bindable var updater = updater
         @Bindable var transparency = container.transparency
+        @Bindable var privacy = container.privacy
         @Bindable var notifications = container.notificationSettings
         // Same section rhythm as the dashboard and Customize (all read the density setting).
         return VStack(alignment: .leading, spacing: density.sectionSpacing) {
@@ -141,6 +142,20 @@ struct SettingsScreen: View {
                 }
             }
             notificationsSection
+            // No "Share Anonymous Usage" row: this fork ships without telemetry, so there is nothing
+            // to opt into. Screen-share hiding is purely local and stays.
+            section("Privacy") {
+                row("Hide From Screen Share") {
+                    Toggle("", isOn: $privacy.hideUsageWhileScreenSharing)
+                        .settingsSwitchStyle()
+                }
+                Text("While your screen is shared or recorded, the menu bar shows “OpenUsage” instead of your usage.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             commandLineSection
             advancedSection
             // Visible whenever the updater is active (only the signed release build ships a feed; the
