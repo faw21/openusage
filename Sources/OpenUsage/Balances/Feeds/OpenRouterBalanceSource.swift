@@ -30,16 +30,18 @@ struct OpenRouterBalanceSource: BalanceSource {
                 monthly = keyParsed.data.usage_monthly
             }
 
-            // Month-to-date spend leads, matching the OpenAI and Anthropic cards; the prepaid balance
-            // moves to the subtitle. When OpenRouter doesn't report a monthly figure, the balance leads
-            // instead — better than a headline "—".
+            // Month-to-date spend leads, matching the OpenAI and Anthropic cards, and the subtitle stays
+            // the same two words they use — the cards sit two-up in a 420pt popover, so anything longer
+            // wraps. The prepaid balance moves down to the detail line. When OpenRouter reports no
+            // monthly figure, the balance leads instead — better than a headline "—".
+            let remaining = BalanceFormat.money(balance)
             return card(
                 .ok,
                 primary: BalanceFormat.money(monthly ?? balance),
-                secondary: monthly == nil
-                    ? "credit remaining"
-                    : "spent this month · \(BalanceFormat.money(balance)) credit remaining",
-                detail: "\(BalanceFormat.money(parsed.data.total_usage)) used of \(BalanceFormat.money(parsed.data.total_credits))",
+                secondary: monthly == nil ? "credit remaining" : "spent this month",
+                detail: monthly == nil
+                    ? "\(BalanceFormat.money(parsed.data.total_usage)) used of \(BalanceFormat.money(parsed.data.total_credits))"
+                    : "\(remaining) left of \(BalanceFormat.money(parsed.data.total_credits))",
                 updatedAt: Date()
             )
         } catch {
