@@ -1,8 +1,9 @@
 import Foundation
 
 /// Anthropic exposes no prepaid balance for a key. Org-level month-to-date spend comes from the Cost
-/// Report Admin API, which requires an admin key (`sk-ant-admin01-…`). `amount` is a decimal string in
-/// cents. A non-admin key (401/403) degrades to an honest "not available".
+/// Report Admin API, which requires an admin key (`sk-ant-admin01-…`). `amount` is a decimal amount in
+/// CENTS, shipped as a string (a number also decodes — see `LooseNumber`). A non-admin key (401/403)
+/// degrades to an honest "not available".
 struct AnthropicSpendSource: BalanceSource {
     let id = "anthropic"
     let title = "Anthropic"
@@ -27,32 +28,40 @@ struct AnthropicSpendSource: BalanceSource {
             URLQueryItem(name: "limit", value: "31")
         ]
         guard let url = components.url else { return card(.unsupported) }
+        let response: HTTPResponse
         do {
-            let response = try await http.send(HTTPRequest(
+            response = try await http.send(HTTPRequest(
                 method: "GET", url: url,
                 headers: [
                     "x-api-key": key,
                     "anthropic-version": "2023-06-01",
                     "Accept": "application/json"
                 ], timeout: 20))
-            if response.statusCode == 401 || response.statusCode == 403 {
-                return card(.unsupported, detail: "No balance API · spend needs an admin key")
-            }
-            guard response.statusCode == 200,
-                  let parsed = try? JSONDecoder().decode(Report.self, from: response.body) else {
-                return card(.failed("HTTP \(response.statusCode)"))
-            }
-            // `amount` is a decimal string in CENTS (verified against the live account: raw month sum
-            // ~1417 → $14.17). Sum, then convert to dollars.
-            let cents = parsed.data.flatMap { $0.results }.compactMap { Double($0.amount ?? "0") }.reduce(0, +)
+        } catch {
+            AppLog.error(.http, "anthropic cost report request failed: \(error.localizedDescription)")
+            return card(.failed("Couldn't reach Anthropic"))
+        }
+        if response.statusCode == 401 || response.statusCode == 403 {
+            return card(.unsupported, detail: "No balance API · spend needs an admin key")
+        }
+        guard response.statusCode == 200 else {
+            AppLog.error(.http, "anthropic cost report HTTP \(response.statusCode)")
+            return card(.failed("HTTP \(response.statusCode)"))
+        }
+        do {
+            let parsed = try JSONDecoder().decode(Report.self, from: response.body)
+            // `amount` is in CENTS (verified against the live account: raw month sum ~1417 → $14.17).
+            // Sum, then convert to dollars.
+            let cents = parsed.data.flatMap { $0.results }.compactMap { $0.amount?.double }.reduce(0, +)
             return card(.ok, primary: BalanceFormat.money(cents / 100), secondary: "spent this month",
                         detail: "API keys have no prepaid balance", updatedAt: Date())
         } catch {
-            return card(.failed("Couldn't reach Anthropic"))
+            AppLog.error(.http, "anthropic cost report didn't decode: \(error)")
+            return card(.failed("Unexpected response"))
         }
     }
 
     private struct Report: Decodable { let data: [Bucket] }
     private struct Bucket: Decodable { let results: [Result] }
-    private struct Result: Decodable { let amount: String? }
+    private struct Result: Decodable { let amount: LooseNumber? }
 }

@@ -7,12 +7,19 @@ import Foundation
 struct BalanceKeyStore: Sendable {
     private let store: UserAPIKeyStore
 
-    init(name: String, environmentNames: [String] = []) {
+    /// `files`/`environment` default to the real machine; the provider auth stores take the same pair so
+    /// tests can point a key lookup at a fixture instead of the developer's own `~/.config`.
+    init(
+        name: String,
+        environmentNames: [String] = [],
+        files: TextFileAccessing = LocalTextFileAccessor(),
+        environment: EnvironmentReading = ProcessEnvironmentReader()
+    ) {
         store = UserAPIKeyStore(
             configPaths: ["~/.config/openusage/\(name).json"],
             environmentNames: environmentNames,
-            files: LocalTextFileAccessor(),
-            environment: ProcessEnvironmentReader(),
+            files: files,
+            environment: environment,
             makeError: { _ in BalanceKeyError.saveFailed }
         )
     }
