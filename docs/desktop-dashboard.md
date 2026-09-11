@@ -83,4 +83,4 @@ swift build --build-tests \
 
 The one swift-testing file (`Tests/OpenUsageTests/OpenUsageISO8601Tests.swift`) can't compile this way —
 the `Testing` module only exists in the older Xcode toolchain — so move it aside for the run if the build
-stops there. Everything else (1282 XCTest cases) runs.
+stops there. Every other test in the bundle runs.
