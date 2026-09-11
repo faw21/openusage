@@ -1,9 +1,8 @@
 import Foundation
 
 /// The `Item`-independent half of the incremental scan machinery: file discovery and the scan-window
-/// lower bound. A non-generic namespace so providers that only need the window math (Grok) share it
-/// without dragging in the generic actor, and so call sites read `JSONLScanning.sinceDate(...)` instead
-/// of `IncrementalJSONLScanner<Entry>.sinceDate(...)`.
+/// lower bound. A non-generic namespace keeps file discovery independent of each provider's parsed
+/// row type and lets call sites read `JSONLScanning.sinceDate(...)`.
 enum JSONLScanning {
     /// A discovered log file plus the stat fields the parse cache is keyed on.
     struct DiscoveredFile: Sendable {
@@ -44,8 +43,8 @@ enum JSONLScanning {
     }
 }
 
-/// The incremental, off-main-actor scan machinery shared by the Claude, Codex, and pi log scanners: discover
-/// `*.jsonl` files, re-parse only those changed since the last scan (a per-file cache keyed by path +
+/// The incremental, off-main-actor scan machinery shared by the Claude, Codex, Grok, and pi log scanners:
+/// discover `*.jsonl` files, re-parse only those changed since the last scan (a per-file cache keyed by path +
 /// size + mtime), and return the parsed items concatenated in file order. Each provider supplies its own
 /// file discovery, per-file parser, and post-parse dedup/aggregation; this owns the cache, the parallel
 /// parse, the mtime-window skip, and (via `JSONLScanning`) the jsonl enumeration so that scaffolding
@@ -75,6 +74,7 @@ actor IncrementalJSONLScanner<Item: Codable & Sendable> {
     private var writeTasks: [String: Task<Void, Never>] = [:]
     private var writeGenerations: [String: Int] = [:]
     private let maxConcurrentParses: Int
+    private let logTag: String
     private let parsePermitPool: JSONLParsePermitPool
     private let readFailureReporter: UsageLogReadFailureReporter
     private let persistence: JSONLScanCachePersistence?
@@ -87,6 +87,7 @@ actor IncrementalJSONLScanner<Item: Codable & Sendable> {
     ) {
         precondition(maxConcurrentParses > 0)
         self.maxConcurrentParses = maxConcurrentParses
+        self.logTag = logTag
         self.parsePermitPool = JSONLParsePermitPool(limit: maxConcurrentParses)
         self.readFailureReporter = UsageLogReadFailureReporter(logTag: logTag, warning: readFailureWarning)
         self.persistence = persistence
@@ -112,6 +113,23 @@ actor IncrementalJSONLScanner<Item: Codable & Sendable> {
         since: Date,
         cacheIdentity: String = "default",
         parse: @Sendable @escaping (Data) -> [Item]?
+    ) async -> [Item]? {
+        await items(
+            from: files,
+            since: since,
+            cacheIdentity: cacheIdentity,
+            initialState: JSONLStatelessParserState(),
+            parse: { data, _ in parse(data) }
+        )
+    }
+
+    /// Stateful parsers keep one independent state per file while the reader delivers bounded batches.
+    func items<State: Sendable>(
+        from files: [JSONLScanning.DiscoveredFile],
+        since: Date,
+        cacheIdentity: String = "default",
+        initialState: State,
+        parse: @Sendable @escaping (Data, inout State) -> [Item]?
     ) async -> [Item]? {
         precondition(!cacheIdentity.isEmpty)
         guard await acquire(cacheIdentity) else { return nil }
@@ -139,9 +157,18 @@ actor IncrementalJSONLScanner<Item: Codable & Sendable> {
             toParse,
             maxConcurrentParses: maxConcurrentParses,
             permitPool: parsePermitPool,
+            initialState: initialState,
             parse: parse
         )
         guard !Task.isCancelled else { return nil }
+        let oversizedRecordCount = parseResults.reduce(0) { $0 + $1.oversizedRecordCount }
+        if oversizedRecordCount > 0 {
+            AppLog.warn(
+                logTag,
+                "Skipped \(oversizedRecordCount) oversized local usage log records "
+                    + "(maximum \(JSONLStreamingReader.maximumRecordBytes) bytes); spend may be incomplete"
+            )
+        }
         let checkedPaths = Set(parseResults.lazy.map(\.file.path))
         let unreadablePaths = Set(parseResults.lazy.filter(\.readFailed).map(\.file.path))
         await readFailureReporter.update(checkedPaths: checkedPaths, failingPaths: unreadablePaths)
@@ -406,27 +433,39 @@ actor IncrementalJSONLScanner<Item: Codable & Sendable> {
 
     /// Read + parse a bounded number of changed files in parallel. Results are keyed back to the input
     /// order; a `nil` item list marks an unreadable file.
-    private static func parseFiles(
+    private static func parseFiles<State: Sendable>(
         _ files: [JSONLScanning.DiscoveredFile],
         maxConcurrentParses: Int,
         permitPool: JSONLParsePermitPool,
-        parse: @Sendable @escaping (Data) -> [Item]?
-    ) async -> [(file: JSONLScanning.DiscoveredFile, items: [Item]?, readFailed: Bool)] {
+        initialState: State,
+        parse: @Sendable @escaping (Data, inout State) -> [Item]?
+    ) async -> [(file: JSONLScanning.DiscoveredFile, items: [Item]?, readFailed: Bool, oversizedRecordCount: Int)] {
         await withTaskGroup(
-            of: (Int, [Item]?, Bool).self,
-            returning: [(file: JSONLScanning.DiscoveredFile, items: [Item]?, readFailed: Bool)].self
+            of: (Int, [Item]?, Bool, Int).self,
+            returning: [
+                (file: JSONLScanning.DiscoveredFile, items: [Item]?, readFailed: Bool, oversizedRecordCount: Int)
+            ].self
         ) { group in
             func addTask(at index: Int) {
                 let file = files[index]
                 group.addTask {
-                    guard await permitPool.acquire() else { return (index, nil, false) }
-                    let result: (Int, [Item]?, Bool)
+                    guard await permitPool.acquire() else { return (index, nil, false, 0) }
+                    let result: (Int, [Item]?, Bool, Int)
                     if Task.isCancelled || !FileManager.default.fileExists(atPath: file.path) {
-                        result = (index, nil, false)
-                    } else if let data = FileManager.default.contents(atPath: file.path) {
-                        result = (index, parse(data), false)
+                        result = (index, nil, false, 0)
                     } else {
-                        result = (index, nil, true)
+                        do {
+                            let streamed = try JSONLStreamingReader.read(
+                                path: file.path,
+                                initialState: initialState,
+                                parse: parse
+                            )
+                            result = (index, streamed.items, false, streamed.oversizedRecordCount)
+                        } catch is CancellationError {
+                            result = (index, nil, false, 0)
+                        } catch {
+                            result = (index, nil, true, 0)
+                        }
                     }
                     await permitPool.release()
                     return result
@@ -440,13 +479,15 @@ actor IncrementalJSONLScanner<Item: Codable & Sendable> {
                 nextIndex += 1
             }
 
-            var results = files.map { (file: $0, items: Optional<[Item]>.none, readFailed: false) }
-            for await (index, items, readFailed) in group {
+            var results = files.map {
+                (file: $0, items: Optional<[Item]>.none, readFailed: false, oversizedRecordCount: 0)
+            }
+            for await (index, items, readFailed, oversizedRecordCount) in group {
                 if Task.isCancelled {
                     group.cancelAll()
                     break
                 }
-                results[index] = (files[index], items, readFailed)
+                results[index] = (files[index], items, readFailed, oversizedRecordCount)
                 if nextIndex < files.count {
                     addTask(at: nextIndex)
                     nextIndex += 1
